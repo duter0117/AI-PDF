@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 結構圖說解析器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .loader { border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="min-h-screen p-8 flex flex-col items-center">
+
+<div class="w-full max-w-4xl text-center mb-8">
+    <h1 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">AI 結構配筋圖自動解析</h1>
+    <p class="mt-2 text-slate-400">上傳 PDF，我們在背景為您即時追蹤進度，不須手動複製 Task ID。</p>
+</div>
+
+<div class="glass-panel w-full max-w-4xl p-8 rounded-2xl shadow-xl">
+    <form id="uploadForm" class="space-y-6">
+        <div>
+            <label class="block text-sm font-medium text-slate-300 mb-2">選擇 PDF 檔案</label>
+            <input type="file" id="pdfFile" accept=".pdf" required class="block w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-500/10 file:text-blue-400 hover:file:bg-blue-500/20 transition-all cursor-pointer">
+        </div>
+        
+        <div>
+            <label class="block text-sm font-medium text-slate-300 mb-2">頁碼 (0 為第一頁)</label>
+            <input type="number" id="pageNum" value="0" min="0" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-200">
+        </div>
+
+        <!-- Advanced Options -->
+        <details class="bg-slate-800/50 rounded-lg p-4 border border-slate-700/50 mt-4 rounded-xl cursor-pointer [&_summary::-webkit-details-marker]:hidden">
+            <summary class="flex items-center justify-between font-semibold text-slate-300 text-sm">
+                <span>⚙️ 進階：OpenCV 視覺切割參數</span>
+                <svg class="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </summary>
+            
+            <div class="mt-4 space-y-4 cursor-default">
+                <div>
+                    <div class="flex justify-between">
+                        <label class="block text-xs font-medium text-slate-400 mb-1">膨脹係數核大小 (Dilation)</label>
+                        <span id="valDilation" class="text-xs text-blue-400 font-mono">2</span>
+                    </div>
+                    <input type="range" id="paramDilation" min="1" max="5" value="2" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer" oninput="document.getElementById('valDilation').innerText=this.value">
+                </div>
+                <div>
+                    <div class="flex justify-between">
+                        <label class="block text-xs font-medium text-slate-400 mb-1">面積過濾閥值 (Min Area)</label>
+                        <span id="valArea" class="text-xs text-blue-400 font-mono">100000</span>
+                    </div>
+                    <input type="range" id="paramArea" min="10000" max="300000" step="10000" value="100000" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer" oninput="document.getElementById('valArea').innerText=this.value">
+                </div>
+                <div>
+                    <div class="flex justify-between">
+                        <label class="block text-xs font-medium text-slate-400 mb-1">強制擴張視野範圍 (Padding Down)</label>
+                        <span id="valPadding" class="text-xs text-blue-400 font-mono">160</span>
+                    </div>
+                    <input type="range" id="paramPadding" min="20" max="400" step="10" value="160" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer" oninput="document.getElementById('valPadding').innerText=this.value">
+                </div>
+                <div>
+                    <div class="flex justify-between">
+                        <label class="block text-xs font-medium text-slate-400 mb-1">圖框刪除長度閥值 (Hough Erase %)</label>
+                        <span id="valHough" class="text-xs text-blue-400 font-mono">95%</span>
+                    </div>
+                    <input type="range" id="paramHough" min="50" max="100" step="1" value="95" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer" oninput="document.getElementById('valHough').innerText=this.value+'%'">
+                </div>
+                <div class="flex items-center gap-2 pt-2 border-t border-slate-700/50 mt-4">
+                    <input type="checkbox" id="enableDecomp" checked class="w-4 h-4 text-emerald-500 bg-slate-900 border-slate-700 rounded focus:ring-emerald-500 focus:ring-2">
+                    <label for="enableDecomp" class="text-xs font-medium text-slate-300">啟用「連續跨水平分解」 (物理斬波)</label>
+                    <span class="ml-auto text-[10px] text-emerald-400 border border-emerald-900 px-1.5 rounded bg-emerald-900/30">推薦開啟</span>
+                </div>
+                
+                <div class="flex items-center gap-2 pt-2 border-t border-slate-700/50 mt-2">
+                    <input type="checkbox" id="autoTune" class="w-4 h-4 text-blue-500 bg-slate-900 border-slate-700 rounded focus:ring-blue-500 focus:ring-2">
+                    <label for="autoTune" class="text-xs font-medium text-slate-300">啟用參數遞歸優化 (直到信心分數達標為止)</label>
+                    <span class="ml-auto text-[10px] text-slate-500 border border-slate-700 px-1.5 rounded bg-slate-800">實驗功能 (尚未使用)</span>
+                </div>
+            </div>
+        </details>
+
+        <button type="submit" id="submitBtn" class="w-full py-3 px-4 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-semibold rounded-lg shadow-md transition-all flex items-center justify-center gap-2">
+            <span>開始 AI 解析</span>
+        </button>
+    </form>
+    
+    <!-- Progress Section -->
+    <div id="progressContainer" class="hidden mt-8 pt-8 border-t border-slate-700/50">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="font-medium text-blue-400" id="statusText">正在上傳...</h3>
+            <span class="text-xs font-mono bg-blue-500/20 text-blue-300 px-2 py-1 rounded" id="progressPercentage">0%</span>
+        </div>
+        <div class="w-full bg-slate-800 rounded-full h-2.5 mb-4 overflow-hidden">
+            <div id="progressBar" class="bg-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+        <p class="text-sm font-mono text-slate-400" id="progressMessage">等待啟動...</p>
+    </div>
+
+    <!-- Result Section -->
+    <div id="resultContainer" class="hidden mt-8 w-full border-t border-slate-700/50 pt-8">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-4">
+            <h3 class="font-medium text-emerald-400 text-lg flex items-center gap-3">
+                <span>解析完成結果</span>
+                <div id="confidenceBadges" class="flex flex-wrap items-center gap-3 text-xs hidden">
+                    <div class="flex items-center gap-2 bg-slate-800/60 p-1.5 rounded-lg border border-slate-700/80">
+                        <span id="badgeCrop" class="px-2 py-1 rounded font-mono">切割: --%</span>
+                        <div class="flex flex-col text-[10px] text-slate-400 px-1 font-mono gap-0.5">
+                            <span id="textNoiseDrop">雜訊: --%</span>
+                            <span id="textNmsDrop">重疊: --%</span>
+                        </div>
+                    </div>
+                    <span id="badgeRecog" class="px-2 py-1 rounded font-mono border">辨識: --%</span>
+                </div>
+            </h3>
+            <button id="toggleViewBtn" type="button" class="px-4 py-1.5 text-sm font-medium text-slate-300 bg-slate-800 border border-slate-700 rounded-full hover:bg-slate-700 transition-colors flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                <span id="toggleViewText">顯示 JSON</span>
+            </button>
+        </div>
+        
+        <!-- Tree View -->
+        <div id="treeView" class="bg-slate-900/40 border border-slate-700/50 rounded-xl p-4 overflow-y-auto max-h-[600px] w-full">
+        </div>
+
+        <!-- JSON View -->
+        <div id="jsonView" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4 max-h-[600px] overflow-y-auto">
+            <pre id="jsonResult" class="text-xs text-emerald-300 font-mono whitespace-pre-wrap"></pre>
+        </div>
+    </div>
+</div>
+
+<script>
+    const form = document.getElementById('uploadForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const progressContainer = document.getElementById('progressContainer');
+    const resultContainer = document.getElementById('resultContainer');
+    const progressBar = document.getElementById('progressBar');
+    const progressPercentage = document.getElementById('progressPercentage');
+    const statusText = document.getElementById('statusText');
+    const progressMessage = document.getElementById('progressMessage');
+    const jsonResult = document.getElementById('jsonResult');
+
+    const toggleViewBtn = document.getElementById('toggleViewBtn');
+    const toggleViewText = document.getElementById('toggleViewText');
+    const treeView = document.getElementById('treeView');
+    const jsonView = document.getElementById('jsonView');
+
+    let pollInterval = null;
+    let isJsonView = false;
+    let currentResultData = null;
+
+    toggleViewBtn.addEventListener('click', () => {
+        isJsonView = !isJsonView;
+        if (isJsonView) {
+            treeView.classList.add('hidden');
+            jsonView.classList.remove('hidden');
+            toggleViewText.innerText = '顯示階層視圖';
+        } else {
+            treeView.classList.remove('hidden');
+            jsonView.classList.add('hidden');
+            toggleViewText.innerText = '顯示 JSON';
+        }
+    });
+
+    function createTreeNode(key, value, isRoot = false) {
+        const li = document.createElement('div');
+        li.className = isRoot ? 'my-2 bg-slate-800/30 rounded-lg border border-slate-700/50 shadow-sm' : 'my-1 ml-4 border-l border-slate-700/30 pl-3';
+
+        if (typeof value === 'object' && value !== null) {
+            const isArray = Array.isArray(value);
+            
+            // 新增邏輯：如果是一個陣列，且裡面全部都是基本型別 (例如字串或數字)，直接合併成一行文字顯示，不生長樹枝
+            if (isArray && value.length > 0 && value.every(v => typeof v !== 'object' && v !== null)) {
+                let displayKey = isNaN(key) ? key : `[${key}]`;
+                const item = document.createElement('div');
+                item.className = 'py-1.5 px-3 flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-4 hover:bg-slate-800/40 rounded transition-colors text-sm';
+                item.innerHTML = `
+                    <span class="font-medium text-slate-400 shrink-0 min-w-[120px]">${displayKey} :</span>
+                    <span class="text-emerald-200 font-mono break-words bg-slate-800/50 px-2 py-0.5 rounded border border-slate-700/50">${value.join(', ')}</span>
+                `;
+                li.appendChild(item);
+                return li;
+            }
+            
+            const keys = Object.keys(value);
+            
+            const header = document.createElement('div');
+            header.className = `cursor-pointer flex items-center py-2.5 px-3 rounded-lg hover:bg-slate-700/50 transition-colors border border-transparent ${isRoot ? 'font-semibold text-emerald-400 text-base bg-slate-800/50' : 'text-emerald-300 font-medium text-sm'}`;
+            
+            let titleSuffix = '';
+            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                let idText = value['beam_id'] || value['id'] || value['name'] || value['梁編號'] || value['編號'];
+                if (idText) {
+                    titleSuffix = ` "${idText}"`;
+                }
+            }
+            let displayKey = isNaN(key) ? key : `[${key}]${titleSuffix}`;
+
+            header.innerHTML = `
+                <svg class="w-4 h-4 mr-2 text-slate-400 transform transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                <span>${displayKey}</span>
+                <span class="ml-3 text-xs text-slate-500 font-mono">${isArray ? `[${keys.length}]` : `{${keys.length}}`}</span>
+            `;
+            
+            const content = document.createElement('div');
+            content.className = 'hidden flex-col gap-1 mt-1 pb-2 px-1';
+            
+            let rendered = false;
+            
+            header.addEventListener('click', () => {
+                const svg = header.querySelector('svg');
+                if (content.classList.contains('hidden')) {
+                    content.classList.remove('hidden');
+                    content.classList.add('flex');
+                    svg.classList.add('rotate-90');
+                    
+                    if (!rendered) {
+                        keys.forEach(k => {
+                            content.appendChild(createTreeNode(k, value[k]));
+                        });
+                        rendered = true;
+                    }
+                } else {
+                    content.classList.add('hidden');
+                    content.classList.remove('flex');
+                    svg.classList.remove('rotate-90');
+                }
+            });
+            
+            li.appendChild(header);
+            li.appendChild(content);
+        } else {
+            let displayKey = isNaN(key) ? key : `[${key}]`;
+            const item = document.createElement('div');
+            item.className = 'py-1.5 px-3 flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-4 hover:bg-slate-800/40 rounded transition-colors text-sm';
+            item.innerHTML = `
+                <span class="font-medium text-slate-400 shrink-0 min-w-[120px]">${displayKey}:</span>
+                <span class="text-blue-300 break-words">${value}</span>
+            `;
+            li.appendChild(item);
+        }
+        
+        return li;
+    }
+
+    function renderTreeView(data) {
+        treeView.innerHTML = '';
+        
+        if (typeof data !== 'object' || data === null) {
+            treeView.innerHTML = '<p class="text-slate-400">無可顯示的資料</p>';
+            return;
+        }
+
+        const keys = Object.keys(data);
+        if (keys.length === 0) {
+            treeView.innerHTML = '<p class="text-slate-400">資料為空</p>';
+            return;
+        }
+
+        keys.forEach(key => {
+            treeView.appendChild(createTreeNode(key, data[key], true));
+        });
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const fileInput = document.getElementById('pdfFile');
+        const pageNum = document.getElementById('pageNum').value;
+        
+        if (!fileInput.files[0]) return;
+
+        // Reset UI
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<div class="loader"></div> <span>處理中...</span>';
+        progressContainer.classList.remove('hidden');
+        resultContainer.classList.add('hidden');
+        updateProgress(0, '準備上傳...', 'processing');
+
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('page_num', pageNum);
+        formData.append('dilation_iterations', document.getElementById('paramDilation').value);
+        formData.append('min_area', document.getElementById('paramArea').value);
+        formData.append('padding_bottom', document.getElementById('paramPadding').value);
+        formData.append('hough_threshold', document.getElementById('paramHough').value);
+        formData.append('enable_decomp', document.getElementById('enableDecomp').checked);
+        formData.append('auto_tune', document.getElementById('autoTune').checked);
+
+        try {
+            updateProgress(5, '檔案上傳中，請稍候...', 'processing');
+            const res = await fetch('/api/v1/task/extract', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            
+            if (data.task_id) {
+                startPolling(data.task_id);
+            } else {
+                showError('啟動失敗: 未取得任務編號');
+            }
+        } catch (err) {
+            showError('發生網路錯誤: ' + err.message);
+        }
+    });
+
+    function startPolling(taskId) {
+        if (pollInterval) clearInterval(pollInterval);
+        
+        pollInterval = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/v1/task/${taskId}`);
+                const data = await res.json();
+
+                updateProgress(data.progress, data.message, data.status);
+
+                if (data.status === 'success') {
+                    clearInterval(pollInterval);
+                    showSuccess(data.result);
+                } else if (data.status === 'failed') {
+                    clearInterval(pollInterval);
+                    showError(data.message);
+                }
+            } catch (err) {
+                console.error("Polling error", err);
+            }
+        }, 1500); // 每 1.5 秒自動抓一次
+    }
+
+    function updateProgress(percent, msg, status) {
+        progressBar.style.width = `${percent}%`;
+        progressPercentage.innerText = `${percent}%`;
+        progressMessage.innerText = msg;
+        
+        if (status === 'processing' || status === 'pending') {
+            statusText.innerText = 'AI 解析中...';
+            statusText.className = 'font-medium text-blue-400';
+            progressBar.className = 'bg-blue-500 h-2.5 rounded-full transition-all duration-300';
+            progressPercentage.className = 'text-xs font-mono bg-blue-500/20 text-blue-300 px-2 py-1 rounded';
+        } else if (status === 'failed') {
+            statusText.innerText = '任務失敗';
+            statusText.className = 'font-medium text-red-400';
+            progressBar.className = 'bg-red-500 h-2.5 rounded-full transition-all duration-300';
+        }
+    }
+
+    function showSuccess(resultData) {
+        currentResultData = resultData;
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span>重新上傳解析</span>';
+        
+        statusText.innerText = '任務圓滿完成！';
+        statusText.className = 'font-medium text-emerald-400';
+        progressBar.className = 'bg-emerald-500 h-2.5 rounded-full transition-all duration-300';
+        progressPercentage.className = 'text-xs font-mono bg-emerald-500/20 text-emerald-300 px-2 py-1 rounded';
+        
+        if (resultData.confidence_scores) {
+            const cCrop = resultData.confidence_scores.crop_confidence || 0;
+            const cRecog = resultData.confidence_scores.recognition_confidence || 0;
+            const cNoise = resultData.confidence_scores.noise_drop_rate || 0;
+            const cNms = resultData.confidence_scores.nms_drop_rate || 0;
+            
+            const badgeCrop = document.getElementById('badgeCrop');
+            const badgeRecog = document.getElementById('badgeRecog');
+            
+            badgeCrop.innerText = `切割信心: ${cCrop}%`;
+            badgeCrop.className = cCrop > 80 ? 'px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 font-mono border border-emerald-500/30' : (cCrop > 50 ? 'px-2 py-1 rounded bg-amber-500/20 text-amber-300 font-mono border border-amber-500/30' : 'px-2 py-1 rounded bg-red-500/20 text-red-400 font-mono border border-red-500/30');
+            
+            document.getElementById('textNoiseDrop').innerText = `雜訊丟棄: ${cNoise}%`;
+            document.getElementById('textNmsDrop').innerText = `高度重疊: ${cNms}%`;
+            
+            badgeRecog.innerText = `辨識信心: ${cRecog}%`;
+            badgeRecog.className = cRecog > 80 ? 'px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 font-mono border border-emerald-500/30' : (cRecog > 50 ? 'px-2 py-1 rounded bg-amber-500/20 text-amber-300 font-mono border border-amber-500/30' : 'px-2 py-1 rounded bg-red-500/20 text-red-400 font-mono border border-red-500/30');
+            
+            document.getElementById('confidenceBadges').classList.remove('hidden');
+        } else {
+            document.getElementById('confidenceBadges').classList.add('hidden');
+        }
+        
+        jsonResult.innerText = JSON.stringify(resultData, null, 2);
+        renderTreeView(resultData);
+        resultContainer.classList.remove('hidden');
+    }
+
+    function showError(errText) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span>重試</span>';
+        updateProgress(100, errText, 'failed');
+    }
+</script>
+</body>
+</html>
