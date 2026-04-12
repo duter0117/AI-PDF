@@ -150,25 +150,31 @@ def compare_field(field_name: str, expected, predicted) -> Tuple[float, str]:
 # Beam 配對
 # ================================================================
 def match_beams(expected_beams, predicted_beams):
+    def _clean_id(raw_id):
+        """正規化 beam_id 並剝掉重名後綴 (重複-X)"""
+        s = normalize_text(raw_id)
+        s = re.sub(r'\s*\(重複-\d+\)\s*$', '', s).strip()
+        return s
+    
     matched = []
     used_pred = set()
     for exp in expected_beams:
-        exp_id = normalize_text(exp.get("beam_id", ""))
+        exp_id = _clean_id(exp.get("beam_id", ""))
         for j, pred in enumerate(predicted_beams):
             if j in used_pred: continue
-            pred_id = normalize_text(pred.get("beam_id", ""))
+            pred_id = _clean_id(pred.get("beam_id", ""))
             if exp_id and pred_id and exp_id == pred_id:
                 matched.append((exp, pred))
                 used_pred.add(j)
                 break
     unmatched_exp = [e for e in expected_beams if not any(e is m[0] for m in matched)]
     for exp in unmatched_exp:
-        exp_id = normalize_text(exp.get("beam_id", ""))
+        exp_id = _clean_id(exp.get("beam_id", ""))
         if not exp_id: continue
         best_j, best_score = None, 0
         for j, pred in enumerate(predicted_beams):
             if j in used_pred: continue
-            pred_id = normalize_text(pred.get("beam_id", ""))
+            pred_id = _clean_id(pred.get("beam_id", ""))
             if not pred_id: continue
             if exp_id in pred_id or pred_id in exp_id:
                 score = min(len(exp_id), len(pred_id)) / max(len(exp_id), len(pred_id))
@@ -247,13 +253,21 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
     def _score_pair(exp, pred, source):
         def add_t(t1, t2): return tuple(a + b for a, b in zip(t1, t2))
         
-        m_b = analyze_set(exp, pred, ["beam_id"], False)
-        m_t_t = analyze_set(exp, pred, ["top_main_bars_left", "top_main_bars_mid", "top_main_bars_right"], True)
-        m_t_b = analyze_set(exp, pred, ["bottom_main_bars_left", "bottom_main_bars_mid", "bottom_main_bars_right"], True)
-        m_main = add_t(m_t_t, m_t_b)
-        m_stirrup = analyze_set(exp, pred, ["stirrups_left", "stirrups_middle", "stirrups_right"], False)
-        m_face = analyze_set(exp, pred, ["face_bars"], False)
-        m_lap = analyze_set(exp, pred, ["lap_length_top_left", "lap_length_top_right", "lap_length_bottom_left", "lap_length_bottom_right"], False)
+        if exp is None:
+            # 幻覺梁：只扣分梁名，內容欄位不重複扣分
+            m_b = analyze_set(exp, pred, ["beam_id"], False)
+            m_main = (0, 0, 0, 0, 0)
+            m_stirrup = (0, 0, 0, 0, 0)
+            m_face = (0, 0, 0, 0, 0)
+            m_lap = (0, 0, 0, 0, 0)
+        else:
+            m_b = analyze_set(exp, pred, ["beam_id"], False)
+            m_t_t = analyze_set(exp, pred, ["top_main_bars_left", "top_main_bars_mid", "top_main_bars_right"], True)
+            m_t_b = analyze_set(exp, pred, ["bottom_main_bars_left", "bottom_main_bars_mid", "bottom_main_bars_right"], True)
+            m_main = add_t(m_t_t, m_t_b)
+            m_stirrup = analyze_set(exp, pred, ["stirrups_left", "stirrups_middle", "stirrups_right"], False)
+            m_face = analyze_set(exp, pred, ["face_bars"], False)
+            m_lap = analyze_set(exp, pred, ["lap_length_top_left", "lap_length_top_right", "lap_length_bottom_left", "lap_length_bottom_right"], False)
         
         tw, ew, fs = 0, 0, {}
         for f in COMPARE_FIELDS:
@@ -284,9 +298,12 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
             if b["status"] == "MATCHED":
                 for f in COMPARE_FIELDS:
                     fscores[f].append(b["field_scores"].get(f, 0))
-            else:
+            elif b["status"] == "MISSED":
                 for f in COMPARE_FIELDS:
                     fscores[f].append(0.0)
+            elif b["status"] == "HALLUCINATION":
+                # 幻覺梁：傳統欄位準確率也只扣分 beam_id，其餘不計入分母
+                fscores["beam_id"].append(0.0)
         avg_fs = {f: round(sum(fscores[f]) / len(fscores[f]) * 100, 1) if fscores[f] else 0 for f in COMPARE_FIELDS}
         
         agg = {"beam": [0]*5, "main": [0]*5, "stirrup": [0]*5, "face": [0]*5, "lap": [0]*5}

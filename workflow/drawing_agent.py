@@ -138,7 +138,7 @@ async def llm_reasoning_node(state: GraphState):
     try:
         gemini_data = json.loads(state["table_markdown"])
         raw_beams = gemini_data.get("beams", [])
-        from core.normalizer import normalize_dict
+
         from core.post_processor import apply_structural_rules, is_empty_beam
         
         beams_list = []
@@ -155,15 +155,11 @@ async def llm_reasoning_node(state: GraphState):
 
     cv_bboxes = state["vector_data"].get("cv_bboxes", [])
     texts_data = state["vector_data"].get("texts_data", [])
-    parent_count = state["vector_data"].get("cv_metrics", {}).get("parent_count", len(cv_bboxes))
-    
     aligned_entities = []
-    split_beams = []
     
     for idx, beam in enumerate(beams_list):
         anchor_rect = None
         crop_idx = beam.get("crop_index")
-        is_split = False
         
         # 1. 優先使用 Phase 3 的 Micro-Vision 裁塊索引定錨
         if crop_idx is not None and isinstance(crop_idx, int) and 1 <= crop_idx <= len(cv_bboxes):
@@ -212,65 +208,33 @@ async def llm_reasoning_node(state: GraphState):
         # Unified flow: all crops are single spans, no distinction between split/aligned
         aligned_entities.append(beam)
 
-    # === Phase 4: 同名解抉與Smart Merge (欄位級合併取代 Winner-Take-All) ===
-    import uuid
+    # === Phase 4: 重名偵測 (保留全部，不合併) ===
     from collections import defaultdict
     beam_groups = defaultdict(list)
     
     for beam in aligned_entities:
         b_id = beam.get("beam_id", "")
         if not b_id or b_id.startswith("未命名"):
-            beam_groups[f"未命名_{uuid.uuid4().hex[:6]}"].append(beam)
+            beam_groups[f"__solo_{id(beam)}"].append(beam)
         else:
             beam_groups[b_id].append(beam)
-            
-    def _smart_merge_group(group: list) -> dict:
-        """欄位級智慧合併：保留每個欄位中最豐富/最常見的值"""
-        if len(group) == 1:
-            return group[0]
-        
-        # 收集所有出現的 key
-        all_keys = set()
-        for b in group:
-            all_keys.update(b.keys())
-        
-        merged = {}
-        for key in all_keys:
-            vals = [b.get(key) for b in group if key in b]
-            
-            if key in ("crop_index", "spatial_anchor_rect_x_y", "span_group", "_raw_span_idx"):
-                # 座標類：保留第一個有值的
-                merged[key] = next((v for v in vals if v is not None), None)
-            elif key == "self_confidence":
-                # 信心：取最高
-                merged[key] = max((v for v in vals if isinstance(v, (int, float))), default=0)
-            elif key == "alignment_status":
-                merged[key] = vals[0] + f" [Phase 4: Smart-merged from {len(group)} sources]"
-            elif key == "note":
-                # 備註：合併所有非空備註 (去重)
-                notes = list(set(v for v in vals if v and isinstance(v, str)))
-                merged[key] = " | ".join(notes) if notes else ""
-            elif isinstance(vals[0], list) if vals else False:
-                # List 類型 (rebar arrays)：取最長的那個
-                non_empty = [v for v in vals if v and isinstance(v, list) and len(v) > 0]
-                merged[key] = max(non_empty, key=len) if non_empty else []
-            elif isinstance(vals[0], str) if vals else False:
-                # String 類型：取最常見的非空值
-                non_empty = [v for v in vals if v and isinstance(v, str)]
-                if non_empty:
-                    from collections import Counter as Ctr
-                    merged[key] = Ctr(non_empty).most_common(1)[0][0]
-                else:
-                    merged[key] = ""
-            else:
-                merged[key] = vals[0] if vals else None
-        
-        return merged
-        
+    
     final_merged_entities = []
+    dup_count = 0
     
     for b_id, group in beam_groups.items():
-        final_merged_entities.append(_smart_merge_group(group))
+        if b_id.startswith("__solo_"):
+            final_merged_entities.append(group[0])
+        elif len(group) == 1:
+            final_merged_entities.append(group[0])
+        else:
+            # 重名偵測：保留全部，加後綴區分
+            dup_count += len(group)
+            for idx, beam in enumerate(group):
+                beam["beam_id"] = f"{b_id} (重複-{idx+1})"
+                beam["note"] = (beam.get("note", "") + f" | ⚠️ 重名警告：此梁名出現 {len(group)} 次").strip(" | ")
+                final_merged_entities.append(beam)
+            print(f"[Phase 4] ⚠️ 重名偵測: '{b_id}' 出現 {len(group)} 次，已保留全部並加後綴區分")
             
     # Calculate span orders
     span_tracker = defaultdict(list)
@@ -291,14 +255,14 @@ async def llm_reasoning_node(state: GraphState):
     
     # == 計算進階辨識信心分數 ==
     recog_conf = 100.0
-    total_found = beam_count + len(split_beams)
+    total_found = beam_count
     
     if total_found == 0:
         recog_conf = 0.0
     else:
         total_score = 0.0
         # 打分數包含兩者
-        for beam in aligned_entities + split_beams:
+        for beam in aligned_entities:
             beam_score = 10.0 # 基礎分
             
             # 1. 有無梁編號 (非常重要)
@@ -350,7 +314,7 @@ async def llm_reasoning_node(state: GraphState):
                 os.remove(os.path.join(named_dir, f))
             except: pass
             
-    for beam in aligned_entities + split_beams:
+    for beam in aligned_entities:
         b_id = beam.get("beam_id", "")
         c_idx = beam.get("crop_index")
         if b_id and c_idx is not None and isinstance(c_idx, int):
@@ -366,14 +330,12 @@ async def llm_reasoning_node(state: GraphState):
 
     result = {
         "status": "success",
-        "message": f"Phase 3 定位完成：成功將神經網路配筋物件映射回影像物理座標。共偵測到 {beam_count} 個主梁與 {len(split_beams)} 個附屬子梁片段。",
+        "message": f"Phase 3 定位完成：成功將神經網路配筋物件映射回影像物理座標。共偵測到 {beam_count} 個主梁。",
         "aligned_beams": aligned_entities,
-        "split_beams": split_beams,
         "raw_json_string": state["table_markdown"],
         "confidence_scores": scores,
         "extracted_summary": {
             "total_beams_found": beam_count,
-            "total_split_beams_found": len(split_beams),
             "total_vectors_in_page": state["vector_data"].get("vector_count", 0)
         }
     }

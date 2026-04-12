@@ -1,5 +1,9 @@
+import os
+import io
+import json
 import fitz
 from typing import Dict, Any
+from PIL import Image, ImageDraw, ImageFont
 
 class VectorExtractor:
     def __init__(self, pdf_bytes: bytes):
@@ -223,8 +227,6 @@ class VectorExtractor:
         dilated = cv2.dilate(thresh, kernel, iterations=dilation_iterations)
         
         # 儲存膨脹後的海島圖供使用者視覺除錯
-        import os
-        from PIL import Image
         os.makedirs("crops", exist_ok=True)
         img_island = Image.fromarray(dilated)
         img_island.save(f"crops/debug_islands_page_{page_num}.png")
@@ -492,7 +494,6 @@ class VectorExtractor:
         enable_decomp = cv_params.get('enable_decomp', True)
         
         if enable_decomp:
-            import os
             os.makedirs("crops/rough_cut_pass1", exist_ok=True)
             with open("crops/rough_cut_pass1/titles_log.txt", "w", encoding="utf-8") as _f:
                 _f.write("=== 初切標題與字體大小紀錄 ===\n\n")
@@ -576,8 +577,6 @@ class VectorExtractor:
             # --- Two-Pass Architecture: LLM 過濾 ---
             valid_ids_set = set()
             if all_potential_titles:
-                import os
-                import json
                 api_key = os.getenv("GEMINI_API_KEY")
                 if api_key:
                     try:
@@ -776,9 +775,6 @@ class VectorExtractor:
         # ==============================================================
         # 執行除錯裁切並儲存
         if dropped_for_save or final_single_spans or original_parents:
-            import os
-            import io
-            from PIL import Image
             
             drop_dir = "crops/drop"
             trimmed_dir = "crops/trimmed_parents"
