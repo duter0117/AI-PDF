@@ -1,0 +1,55 @@
+import re
+
+def normalize_text(s: str) -> str:
+    if not s or not isinstance(s, str):
+        return ""
+    s = s.strip()
+    s = s.replace("（", "(").replace("）", ")").replace("×", "x").replace("Ｘ", "x")
+    s = s.upper()
+    s = re.sub(r'\s+', ' ', s)
+    
+    # ==== 自定義同義詞轉換與正規化 ====
+    # 1. 過濾掉附帶尺寸的括號雜訊 (例如 B3F B4-3a (50x70) -> B3F B4-3a)
+    s = re.sub(r'\s*\(\s*\d+\s*X\s*\d+\s*\)', '', s).strip()
+    
+    # (原先處理 1-#4@20 的規則已廢棄，遵循工程圖面上「無標示根數即為不明/預設」的本意)
+    
+    # 3. 處理腰筋標註標準化 (確保 E.F. 前有空白並統一格式)
+    s = re.sub(r'\(\s*E\.?F\.?\s*\)', '(E.F.)', s)
+    s = re.sub(r'([^\s])\(E\.F\.\)', r'\1 (E.F.)', s)
+    
+    # 4. 直接替換同義詞的字典
+    synonyms = {
+        "E.F": "E.F.",
+        "EF": "E.F.",
+    }
+    
+    if s in synonyms:
+        s = synonyms[s]
+        
+    return s
+
+def normalize_list(lst) -> list:
+    if not lst or not isinstance(lst, list):
+        return []
+    return [normalize_text(str(x)) for x in lst if x]
+
+def normalize_dict(d: dict) -> dict:
+    if not d or not isinstance(d, dict):
+        return d
+    
+    normalized = {}
+    for k, v in d.items():
+        if isinstance(v, str):
+            # Certain fields should not be heavily normalized (like IDs, but uppercase is fine for now)
+            # Actually our format requires everything to be uppercase/normalized.
+            normalized[k] = normalize_text(v)
+        elif isinstance(v, list):
+            # Might be List[str] or nested
+            normalized[k] = [normalize_text(x) if isinstance(x, str) else normalize_dict(x) if isinstance(x, dict) else x for x in v]
+        elif isinstance(v, dict):
+            normalized[k] = normalize_dict(v)
+        else:
+            normalized[k] = v
+            
+    return normalized

@@ -27,3 +27,7 @@ build/
 temp/
 crops/
 scratch/
+
+# Benchmarks (track JSON ground truth, but not PDFs and results)
+benchmarks/*.pdf
+benchmarks/results/

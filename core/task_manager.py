@@ -15,35 +15,49 @@ def _cleanup_old_tasks():
     for k in expired:
         del tasks_db[k]
 
+def _elapsed(task):
+    """回傳自建立以來的秒數"""
+    return round(time.time() - task.get("created_at", time.time()), 1)
+
 def create_task() -> str:
     _cleanup_old_tasks()
     task_id = str(uuid.uuid4())
+    now = time.time()
     tasks_db[task_id] = {
         "task_id": task_id,
         "status": "pending",
         "progress": 0,
         "message": "任務已建立，等待排程器分配資源...",
-        "created_at": time.time(),
-        "result": None
+        "created_at": now,
+        "result": None,
+        "steps": [{"t": 0, "msg": "任務已建立，等待排程器分配資源..."}]
     }
     return task_id
 
 
 def update_task_progress(task_id: str, progress: int, message: str, status: str = "processing"):
     if task_id in tasks_db:
-        tasks_db[task_id]["progress"] = progress
-        tasks_db[task_id]["message"] = message
-        tasks_db[task_id]["status"] = status
+        task = tasks_db[task_id]
+        task["progress"] = progress
+        task["message"] = message
+        task["status"] = status
+        # 只有訊息變化時才追加步驟，避免重複堆積相同訊息
+        if not task["steps"] or task["steps"][-1]["msg"] != message:
+            task["steps"].append({"t": _elapsed(task), "msg": message})
 
 def complete_task(task_id: str, result: dict):
     if task_id in tasks_db:
-        tasks_db[task_id]["progress"] = 100
-        tasks_db[task_id]["message"] = "分析完成"
-        tasks_db[task_id]["status"] = "success"
-        tasks_db[task_id]["result"] = result
+        task = tasks_db[task_id]
+        task["progress"] = 100
+        task["message"] = "分析完成"
+        task["status"] = "success"
+        task["result"] = result
+        task["steps"].append({"t": _elapsed(task), "msg": "✅ 分析圓滿完成！"})
 
 def fail_task(task_id: str, error_msg: str):
     if task_id in tasks_db:
-        tasks_db[task_id]["progress"] = 100
-        tasks_db[task_id]["message"] = f"分析失敗: {error_msg}"
-        tasks_db[task_id]["status"] = "failed"
+        task = tasks_db[task_id]
+        task["progress"] = 100
+        task["message"] = f"分析失敗: {error_msg}"
+        task["status"] = "failed"
+        task["steps"].append({"t": _elapsed(task), "msg": f"❌ 分析失敗: {error_msg}"})

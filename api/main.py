@@ -64,7 +64,8 @@ async def create_extract_task(
     padding_bottom: int = Form(160),
     hough_threshold: int = Form(95),
     auto_tune: str = Form("false"),
-    enable_decomp: str = Form("true")
+    enable_decomp: str = Form("true"),
+    voting_rounds: int = Form(1)
 ):
     """
     [推薦] 非同步提交圖紙任務。立即回傳 task_id 給前端，不怕 Timeout 斷線。
@@ -80,7 +81,8 @@ async def create_extract_task(
         "padding_bottom": padding_bottom,
         "hough_threshold": hough_threshold,
         "auto_tune": str(auto_tune).lower() == "true",
-        "enable_decomp": str(enable_decomp).lower() == "true"
+        "enable_decomp": str(enable_decomp).lower() == "true",
+        "voting_rounds": max(1, min(3, int(voting_rounds)))
     }
     
     # 拋入背景任務執行

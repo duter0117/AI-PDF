@@ -75,6 +75,13 @@
                 </div>
                 
                 <div class="flex items-center gap-2 pt-2 border-t border-slate-700/50 mt-2">
+                    <label for="votingRounds" class="text-xs font-medium text-slate-300">Self-Consistency 投票輪數</label>
+                    <input type="number" id="votingRounds" value="1" min="1" max="3" class="w-16 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-slate-200 text-center focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <span class="text-[10px] text-slate-400">每張圖塚用不同temperature送N次，取多數決</span>
+                    <span class="ml-auto text-[10px] text-purple-400 border border-purple-900 px-1.5 rounded bg-purple-900/30">1=不做, 2~3=投票</span>
+                </div>
+
+                <div class="flex items-center gap-2 pt-2 border-t border-slate-700/50 mt-2">
                     <input type="checkbox" id="autoTune" class="w-4 h-4 text-blue-500 bg-slate-900 border-slate-700 rounded focus:ring-blue-500 focus:ring-2">
                     <label for="autoTune" class="text-xs font-medium text-slate-300">啟用參數遞歸優化 (直到信心分數達標為止)</label>
                     <span class="ml-auto text-[10px] text-slate-500 border border-slate-700 px-1.5 rounded bg-slate-800">實驗功能 (尚未使用)</span>
@@ -93,10 +100,25 @@
             <h3 class="font-medium text-blue-400" id="statusText">正在上傳...</h3>
             <span class="text-xs font-mono bg-blue-500/20 text-blue-300 px-2 py-1 rounded" id="progressPercentage">0%</span>
         </div>
-        <div class="w-full bg-slate-800 rounded-full h-2.5 mb-4 overflow-hidden">
+        <div class="w-full bg-slate-800 rounded-full h-2.5 mb-3 overflow-hidden">
             <div id="progressBar" class="bg-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
         </div>
-        <p class="text-sm font-mono text-slate-400" id="progressMessage">等待啟動...</p>
+        <p class="text-sm font-mono text-slate-400 mb-3" id="progressMessage">等待啟動...</p>
+        
+        <!-- Collapsible Step Log -->
+        <details id="stepLogDetails" class="bg-slate-900/50 rounded-lg border border-slate-700/50 cursor-pointer">
+            <summary class="flex items-center justify-between px-4 py-2.5 text-xs font-medium text-slate-400 hover:text-slate-300 transition-colors select-none">
+                <span class="flex items-center gap-2">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                    <span>執行步驟日誌</span>
+                    <span id="stepCount" class="text-[10px] text-slate-500 font-mono">(0 步)</span>
+                </span>
+                <svg class="w-3.5 h-3.5 text-slate-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </summary>
+            <div id="stepLogList" class="px-4 pb-3 pt-1 max-h-[300px] overflow-y-auto space-y-0.5">
+                <p class="text-[11px] text-slate-500 font-mono">等待中...</p>
+            </div>
+        </details>
     </div>
 
     <!-- Result Section -->
@@ -289,6 +311,7 @@
         formData.append('hough_threshold', document.getElementById('paramHough').value);
         formData.append('enable_decomp', document.getElementById('enableDecomp').checked);
         formData.append('auto_tune', document.getElementById('autoTune').checked);
+        formData.append('voting_rounds', document.getElementById('votingRounds').value);
 
         try {
             updateProgress(5, '檔案上傳中，請稍候...', 'processing');
@@ -316,7 +339,7 @@
                 const res = await fetch(`/api/v1/task/${taskId}`);
                 const data = await res.json();
 
-                updateProgress(data.progress, data.message, data.status);
+                updateProgress(data.progress, data.message, data.status, data.steps);
 
                 if (data.status === 'success') {
                     clearInterval(pollInterval);
@@ -328,10 +351,10 @@
             } catch (err) {
                 console.error("Polling error", err);
             }
-        }, 1500); // 每 1.5 秒自動抓一次
+        }, 1500);
     }
 
-    function updateProgress(percent, msg, status) {
+    function updateProgress(percent, msg, status, steps) {
         progressBar.style.width = `${percent}%`;
         progressPercentage.innerText = `${percent}%`;
         progressMessage.innerText = msg;
@@ -345,6 +368,37 @@
             statusText.innerText = '任務失敗';
             statusText.className = 'font-medium text-red-400';
             progressBar.className = 'bg-red-500 h-2.5 rounded-full transition-all duration-300';
+        }
+        
+        // 渲染步驟日誌
+        if (steps && Array.isArray(steps)) {
+            const logList = document.getElementById('stepLogList');
+            const stepCount = document.getElementById('stepCount');
+            stepCount.innerText = `(${steps.length} 步)`;
+            
+            logList.innerHTML = steps.map((s, i) => {
+                const timeStr = s.t !== undefined ? `${s.t.toFixed(1)}s` : '';
+                const isLatest = i === steps.length - 1;
+                const isFail = s.msg && (s.msg.includes('✘') || s.msg.includes('失敗') || s.msg.includes('錯誤'));
+                const isSuccess = s.msg && (s.msg.includes('✔') || s.msg.includes('完成'));
+                
+                let dotColor = 'bg-slate-600';
+                let textColor = 'text-slate-500';
+                if (isLatest && status === 'processing') { dotColor = 'bg-blue-400 animate-pulse'; textColor = 'text-slate-300'; }
+                else if (isFail) { dotColor = 'bg-red-500'; textColor = 'text-red-400'; }
+                else if (isSuccess) { dotColor = 'bg-emerald-500'; textColor = 'text-emerald-400'; }
+                else if (isLatest) { textColor = 'text-slate-300'; dotColor = 'bg-blue-400'; }
+                
+                return `<div class="flex items-start gap-2 py-0.5">
+                    <span class="shrink-0 w-1.5 h-1.5 mt-1.5 rounded-full ${dotColor}"></span>
+                    <span class="text-[11px] font-mono ${textColor} leading-relaxed">
+                        <span class="text-slate-600 mr-1">[${timeStr}]</span>${s.msg || ''}
+                    </span>
+                </div>`;
+            }).join('');
+            
+            // 自動滾動到底部
+            logList.scrollTop = logList.scrollHeight;
         }
     }
 

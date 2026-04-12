@@ -1,0 +1,35 @@
+{
+  "_comment": "Ground truth 範本。複製此檔改名為與 PDF 同名 (如 test1.json)，把 PDF 放同層。",
+  "pdf_file": "test1.pdf",
+  "page_num": 0,
+  "expected_beam_count": 13,
+  "expected_split_count": 8,
+  "cv_params": {
+    "dilation_iterations": 2,
+    "min_area": 100000,
+    "padding_bottom": 160,
+    "hough_threshold": 95,
+    "enable_decomp": true,
+    "voting_rounds": 1
+  },
+  "beams": [
+    {
+      "beam_id": "B1F FWB1",
+      "dimensions": "100x380",
+      "top_main_bars_left": ["5-#8"],
+      "top_main_bars_mid": ["3-#8"],
+      "top_main_bars_right": ["5-#8"],
+      "bottom_main_bars_left": ["3-#8"],
+      "bottom_main_bars_mid": [],
+      "bottom_main_bars_right": ["3-#8"],
+      "stirrups_left": "1-#4@10",
+      "stirrups_middle": "2-#4@15",
+      "stirrups_right": "1-#4@10",
+      "face_bars": "2-#5 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    }
+  ]
+}

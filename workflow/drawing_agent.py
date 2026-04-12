@@ -5,6 +5,7 @@ from langgraph.graph import StateGraph, END
 from core.vector_extractor import VectorExtractor
 from core.table_extractor import TableExtractor
 from core.task_manager import update_task_progress, complete_task, fail_task
+from core.normalizer import normalize_dict
 
 def _find_closest_beam_id_downwards(anchor_rect: list, texts_data: list) -> str:
     """依據給定框，由梁中心往下看，找回漏掉的梁編號"""
@@ -115,13 +116,15 @@ async def extract_tables_node(state: GraphState):
 
     print("[Agent] 正在組裝多模態輸入，呼叫 Gemini Vision 解構 JSON...")
     extractor = TableExtractor()
+    voting_rounds = int(state.get("cv_params", {}).get("voting_rounds", 1))
     # 將 OpenCV 框傳給 LLM 進行精準片段裁切閱讀
     json_str = await extractor.extract_tables(
         state["pdf_bytes"], 
         state["page_num"], 
         cv_bboxes, 
         progress_cb=progress_callback,
-        cv_metrics=cv_metrics
+        cv_metrics=cv_metrics,
+        voting_rounds=voting_rounds
     )
     return {"table_markdown": json_str}
 
@@ -134,7 +137,18 @@ async def llm_reasoning_node(state: GraphState):
     
     try:
         gemini_data = json.loads(state["table_markdown"])
-        beams_list = gemini_data.get("beams", [])
+        raw_beams = gemini_data.get("beams", [])
+        from core.normalizer import normalize_dict
+        from core.post_processor import apply_structural_rules, is_empty_beam
+        
+        beams_list = []
+        for b in raw_beams:
+            norm_b = normalize_dict(b)
+            final_b = apply_structural_rules(norm_b)
+            if not is_empty_beam(final_b):
+                beams_list.append(final_b)
+            else:
+                print(f"[後處理] 空梁過濾：刪除只有名稱的空資料 '{final_b.get('beam_id', '?')}'") 
     except Exception as e:
         beams_list = []
         print(f"[異常] JSON 解析失敗: {e}")
@@ -156,12 +170,7 @@ async def llm_reasoning_node(state: GraphState):
             # Gemini 輸出的是 1-based (片段 1, 片段 2... )
             anchor_rect = cv_bboxes[crop_idx - 1]
             beam["spatial_anchor_rect_x_y"] = anchor_rect
-            
-            if crop_idx > parent_count:
-                is_split = True
-                beam["alignment_status"] = f"SUCCESS: Anchored to Split Child Frame #{crop_idx}."
-            else:
-                beam["alignment_status"] = f"SUCCESS: Anchored perfectly to Micro-Vision Crop Frame #{crop_idx}."
+            beam["alignment_status"] = f"SUCCESS: Anchored perfectly to Micro-Vision Crop Frame #{crop_idx}."
         else:
             beam["spatial_anchor_rect_x_y"] = None
             beam["alignment_status"] = "WARNING: Missing or invalid crop_index from LLM JSON."
@@ -169,15 +178,25 @@ async def llm_reasoning_node(state: GraphState):
         b_id = beam.get("beam_id", "") or beam.get("id", "") or beam.get("name", "")
         
         # == 反推估核心邏輯 ==
-        # 如果是分離出來的子梁片段，且長得像沒有自己編號的「邊緣跨」，我們應該用其「母圖」的座標去往下找！
+        # 我們一律使用「母圖」的座標去往下找 ID，因為即使是被切出來的子梁片段，大梁編號依然標示在整體跨距的底部。
         search_anchor = anchor_rect
-        if not b_id and is_split:
-            child_to_parent_map = state["vector_data"].get("cv_metrics", {}).get("child_to_parent_map", {})
-            child_idx_in_decomposed = crop_idx - 1 - parent_count
-            parent_idx = child_to_parent_map.get(str(child_idx_in_decomposed)) or child_to_parent_map.get(child_idx_in_decomposed)
-            if parent_idx is not None and 0 <= parent_idx < len(cv_bboxes):
-                search_anchor = cv_bboxes[parent_idx]
-                beam["alignment_status"] += f" (Using Parent #{parent_idx+1} for ID search)"
+        child_to_parent_map = state["vector_data"].get("cv_metrics", {}).get("child_to_parent_map", {})
+        original_parents = state["vector_data"].get("cv_metrics", {}).get("original_parents", [])
+        zero_based_idx = crop_idx - 1 if (crop_idx is not None and isinstance(crop_idx, int)) else -1
+        
+        parent_idx = child_to_parent_map.get(str(zero_based_idx), child_to_parent_map.get(zero_based_idx))
+        
+        if parent_idx is not None:
+            beam["span_group"] = f"Continuous_{parent_idx+1}"
+            beam["_raw_span_idx"] = zero_based_idx
+        else:
+            beam["span_group"] = None
+            beam["_raw_span_idx"] = None
+            
+        if not b_id:
+            if parent_idx is not None and 0 <= parent_idx < len(original_parents):
+                search_anchor = original_parents[parent_idx]
+                beam["alignment_status"] += f" (Using Original Parent #{parent_idx+1} for ID search)"
                 
         if not b_id and search_anchor and texts_data:
             recovered_id = _find_closest_beam_id_downwards(search_anchor, texts_data)
@@ -190,13 +209,10 @@ async def llm_reasoning_node(state: GraphState):
         else:
             beam["beam_id"] = b_id
             
-        if is_split:
-            split_beams.append(beam)
-        else:
-            aligned_entities.append(beam)
+        # Unified flow: all crops are single spans, no distinction between split/aligned
+        aligned_entities.append(beam)
 
-    # === Phase 4: 同名解抉與去重 (針對母圖) ===
-    # 取消了 Phase 4 對所有資料的擴充，回歸單純對母圖同名狀態去重，保證不塞冗餘子圖
+    # === Phase 4: 同名解抉與Smart Merge (欄位級合併取代 Winner-Take-All) ===
     import uuid
     from collections import defaultdict
     beam_groups = defaultdict(list)
@@ -208,29 +224,66 @@ async def llm_reasoning_node(state: GraphState):
         else:
             beam_groups[b_id].append(beam)
             
-    def calculate_richness(b: dict) -> float:
-        score = 0.0
-        if b.get("dimensions") or b.get("尺寸"): score += 20
-        top = (b.get("top_main_bars_left") or []) + (b.get("top_main_bars_mid") or []) + (b.get("top_main_bars_right") or [])
-        bot = (b.get("bottom_main_bars_left") or []) + (b.get("bottom_main_bars_mid") or []) + (b.get("bottom_main_bars_right") or [])
-        if top: score += 15
-        if bot: score += 15
-        stirrup_info = (b.get("stirrups_left") or "") + (b.get("stirrups_middle") or "") + (b.get("stirrups_right") or "")
-        if stirrup_info: score += 15
-        score += b.get("self_confidence", 0) * 0.1
-        return score
+    def _smart_merge_group(group: list) -> dict:
+        """欄位級智慧合併：保留每個欄位中最豐富/最常見的值"""
+        if len(group) == 1:
+            return group[0]
+        
+        # 收集所有出現的 key
+        all_keys = set()
+        for b in group:
+            all_keys.update(b.keys())
+        
+        merged = {}
+        for key in all_keys:
+            vals = [b.get(key) for b in group if key in b]
+            
+            if key in ("crop_index", "spatial_anchor_rect_x_y", "span_group", "_raw_span_idx"):
+                # 座標類：保留第一個有值的
+                merged[key] = next((v for v in vals if v is not None), None)
+            elif key == "self_confidence":
+                # 信心：取最高
+                merged[key] = max((v for v in vals if isinstance(v, (int, float))), default=0)
+            elif key == "alignment_status":
+                merged[key] = vals[0] + f" [Phase 4: Smart-merged from {len(group)} sources]"
+            elif key == "note":
+                # 備註：合併所有非空備註 (去重)
+                notes = list(set(v for v in vals if v and isinstance(v, str)))
+                merged[key] = " | ".join(notes) if notes else ""
+            elif isinstance(vals[0], list) if vals else False:
+                # List 類型 (rebar arrays)：取最長的那個
+                non_empty = [v for v in vals if v and isinstance(v, list) and len(v) > 0]
+                merged[key] = max(non_empty, key=len) if non_empty else []
+            elif isinstance(vals[0], str) if vals else False:
+                # String 類型：取最常見的非空值
+                non_empty = [v for v in vals if v and isinstance(v, str)]
+                if non_empty:
+                    from collections import Counter as Ctr
+                    merged[key] = Ctr(non_empty).most_common(1)[0][0]
+                else:
+                    merged[key] = ""
+            else:
+                merged[key] = vals[0] if vals else None
+        
+        return merged
         
     final_merged_entities = []
     
     for b_id, group in beam_groups.items():
-        if len(group) == 1:
-            final_merged_entities.append(group[0])
-        else:
-            group.sort(key=calculate_richness, reverse=True)
-            best_beam = group[0]
-            best_beam["alignment_status"] += f" [Phase 4: Multi-crop deduplicated]"
-            final_merged_entities.append(best_beam)
+        final_merged_entities.append(_smart_merge_group(group))
             
+    # Calculate span orders
+    span_tracker = defaultdict(list)
+    for b in final_merged_entities:
+        if b.get("span_group") and b.get("_raw_span_idx") is not None:
+            span_tracker[b["span_group"]].append(b)
+            
+    for sg, blist in span_tracker.items():
+        # sort by raw span index (which maps left-to-right originally)
+        blist.sort(key=lambda x: x["_raw_span_idx"])
+        for i, b in enumerate(blist):
+            b["span_order"] = f"{i+1}/{len(blist)}"
+    
     aligned_entities = final_merged_entities
     # =========================================================================
 
@@ -283,6 +336,33 @@ async def llm_reasoning_node(state: GraphState):
         
     scores = state.get("confidence_scores") or {}
     scores["recognition_confidence"] = round(recog_conf, 1)
+
+    # === 匯出重新命名的純淨圖塊 ===
+    import os
+    import shutil
+    named_dir = "crops/named_beams"
+    os.makedirs(named_dir, exist_ok=True)
+    
+    # 在複製前先清空舊有的資料
+    for f in os.listdir(named_dir):
+        if f.endswith(".png"):
+            try:
+                os.remove(os.path.join(named_dir, f))
+            except: pass
+            
+    for beam in aligned_entities + split_beams:
+        b_id = beam.get("beam_id", "")
+        c_idx = beam.get("crop_index")
+        if b_id and c_idx is not None and isinstance(c_idx, int):
+            src_path = f"crops/crop_{c_idx}.png"
+            if os.path.exists(src_path):
+                # 過濾非法字元
+                safe_id = "".join([c if c.isalnum() or c in ['-', '_', ' '] else '_' for c in b_id]).strip()
+                dst_path = os.path.join(named_dir, f"{safe_id}.png")
+                try:
+                    shutil.copy2(src_path, dst_path)
+                except Exception as e:
+                    print(f"[警告] 無法備份重新命名的圖塊 {safe_id}: {e}")
 
     result = {
         "status": "success",
