@@ -4,26 +4,32 @@ def normalize_text(s: str) -> str:
     if not s or not isinstance(s, str):
         return ""
     s = s.strip()
-    s = s.replace("（", "(").replace("）", ")").replace("×", "x").replace("Ｘ", "x")
-    s = s.upper()
+    s = s.replace("（", "(").replace("）", ")").replace("×", "x").replace("Ｘ", "x").replace("X", "x")
     s = re.sub(r'\s+', ' ', s)
     
     # ==== 自定義同義詞轉換與正規化 ====
     # 1. 過濾掉附帶尺寸的括號雜訊 (例如 B3F B4-3a (50x70) -> B3F B4-3a)
-    s = re.sub(r'\s*\(\s*\d+\s*X\s*\d+\s*\)', '', s).strip()
+    # 判斷：如果這個字串本身不是「純尺寸」，才把尺寸附屬物刪除。如果是純尺寸，只去掉括號
+    is_pure_dimension = re.match(r'^\s*\(?\s*\d+\s*[xX*]\s*\d+\s*\)?\s*$', s, flags=re.IGNORECASE)
+    if not is_pure_dimension:
+        s = re.sub(r'\s*\(\s*\d+\s*[xX*]\s*\d+\s*\)', '', s, flags=re.IGNORECASE).strip()
+    else:
+        s = s.replace("(", "").replace(")", "").strip()
     
     # (原先處理 1-#4@20 的規則已廢棄，遵循工程圖面上「無標示根數即為不明/預設」的本意)
     
     # 2. OCR 吃空白修復：樓層代號(B4F/RF)與梁代號(FB3/G1)黏在一起時，自動補回空格
     # B4FFB3-2 → B4F FB3-2, B3FG1-2 → B3F G1-2, RFCB1 → RF CB1
-    s = re.sub(r'((?:R|B?\d+)F)([A-Z])', r'\1 \2', s)
+    s = re.sub(r'((?:R|B?\d+)[Ff])([A-Za-z])', r'\1 \2', s)
     
     # 3. 處理腰筋標註標準化 (確保 E.F. 前有空白並統一格式)
-    s = re.sub(r'\(\s*E\.?F\.?\s*\)', '(E.F.)', s)
+    s = re.sub(r'\(\s*[Ee]\.?[Ff]\.?\s*\)', '(E.F.)', s)
     s = re.sub(r'([^\s])\(E\.F\.\)', r'\1 (E.F.)', s)
     
     # 4. 直接替換同義詞的字典
     synonyms = {
+        "e.f": "E.F.",
+        "ef": "E.F.",
         "E.F": "E.F.",
         "EF": "E.F.",
     }

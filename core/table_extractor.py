@@ -17,27 +17,27 @@ from collections import Counter
 
 # 定義嚴格的 JSON 輸出規格
 class BeamDetail(BaseModel):
-    beam_id: str = Field(description="構件編號或名稱，例如 B1F FWB1。若沒有明確標示請填寫空字串。")
-    dimensions: str = Field(description="構件外觀尺寸，例如 100x380。若沒有標示請填入空字串。")
+    beam_id: str = Field(description="構件編號或名稱，例如 B1F FWB1。通常出現在【正下方】附近。若沒有明確標示請填寫空字串。")
+    dimensions: str = Field(description="構件外觀尺寸，例如 100x380。通常伴隨在梁編號附近。若沒有標示請填入空字串。")
     
-    top_main_bars_left: List[str] = Field(description="上層主筋(左端)。若有多排請存入字串陣列，例如 ['5-#8', '3-#8']。圖面上無標示則為空陣列 []。")
-    top_main_bars_mid: List[str] = Field(description="上層主筋(中央)。若有多排請存入陣列。無標示則為空陣列 []。")
-    top_main_bars_right: List[str] = Field(description="上層主筋(右端)。若有多排請存入陣列。無標示則為空陣列 []。")
-    bottom_main_bars_left: List[str] = Field(description="下層主筋(左端)。若有多排請存入陣列。無標示則為空陣列 []。")
-    bottom_main_bars_mid: List[str] = Field(description="下層主筋(中央)。若有多排請存入陣列。無標示則為空陣列 []。")
-    bottom_main_bars_right: List[str] = Field(description="下層主筋(右端)。若有多排請存入陣列。無標示則為空陣列 []。")
+    top_main_bars_left: List[str] = Field(description="上層主筋數量(左端)。格式為 N-#S (如 5-#8)，絕不含@符號。通常出現在【左上方】。若有多排請存入字串陣列，例如 ['5-#8', '3-#8']。圖面上無標示則為空陣列 []。")
+    top_main_bars_mid: List[str] = Field(description="上層主筋數量(中央)。格式為 N-#S (如 3-#8)，絕不含@符號。通常出現在【正上方】。若有多排請存入陣列。無標示則為空陣列 []。")
+    top_main_bars_right: List[str] = Field(description="上層主筋數量(右端)。格式為 N-#S (如 5-#8)，絕不含@符號。通常出現在【右上方】。若有多排請存入陣列。無標示則為空陣列 []。")
+    bottom_main_bars_left: List[str] = Field(description="下層主筋數量(左端)。格式為 N-#S (如 3-#8)，絕不含@符號。通常出現在【左下方】。若有多排請存入陣列。無標示則為空陣列 []。")
+    bottom_main_bars_mid: List[str] = Field(description="下層主筋數量(中央)。格式為 N-#S (如 3-#8)，絕不含@符號。通常出現在【正下方】。若有多排請存入陣列。無標示則為空陣列 []。")
+    bottom_main_bars_right: List[str] = Field(description="下層主筋數量(右端)。格式為 N-#S (如 3-#8)，絕不含@符號。通常出現在【右下方】。若有多排請存入陣列。無標示則為空陣列 []。")
     
-    stirrups_left: str = Field(description="箍筋(左側)，例如 1-#4@10，若圖面無標示則留空")
-    stirrups_middle: str = Field(description="箍筋(中央)，例如 2-#4@10，若圖面無標示則留空。如果整支梁只有標註一個箍筋，請統一填入此欄位。")
-    stirrups_right: str = Field(description="箍筋(右側)，例如 1-#4@10，若圖面無標示則留空")
-    face_bars: str = Field(description="腰筋(又稱側邊鋼筋)，例如 12-#5 (E.F)，無標示則留空")
+    stirrups_left: str = Field(description="箍筋數量(左側)。格式含@符號 (如 13-#4@15)，與主筋完全不同！通常出現在【正左方】。若圖面無標示則留空。")
+    stirrups_middle: str = Field(description="箍筋數量(中央)。格式含@符號 (如 #4@20)。通常出現在【正中央】。如果整支梁只有標註一個箍筋(例如全跨共用)，請統一填入此欄位。若圖面無標示則留空。")
+    stirrups_right: str = Field(description="箍筋數量(右側)。格式含@符號 (如 13-#4@15)，與主筋完全不同！通常出現在【正右方】。若圖面無標示則留空。")
+    face_bars: str = Field(description="腰筋(又稱側邊鋼筋)，通常出現在【正左方】【正中央】【正右方】附近，且常帶有 E.F. 字樣。例如 12-#5 (E.F.)，無標示則留空")
     
-    lap_length_top_left: str = Field(description="上層鋼筋搭接長度(左)，通常標示在圖面上端。無則留空。")
-    lap_length_top_right: str = Field(description="上層鋼筋搭接長度(右)，通常標示在圖面上端。無則留空。")
-    lap_length_bottom_left: str = Field(description="下層鋼筋搭接長度(左)，通常標示在圖面下端。無則留空。")
-    lap_length_bottom_right: str = Field(description="下層鋼筋搭接長度(右)，通常標示在圖面下端。無則留空。")
+    lap_length_top_left: str = Field(description="上層鋼筋搭接長度(左)，通常是以純數字出現在【左上方】或圖面最左上極端。無則留空。")
+    lap_length_top_right: str = Field(description="上層鋼筋搭接長度(右)，通常是以純數字出現在【右上方】或圖面最右上極端。無則留空。")
+    lap_length_bottom_left: str = Field(description="下層鋼筋搭接長度(左)，通常是以純數字出現在【左下方】或圖面最左下極端。無則留空。")
+    lap_length_bottom_right: str = Field(description="下層鋼筋搭接長度(右)，通常是以純數字出現在【右下方】或圖面最右下極端。無則留空。")
     
-    self_confidence: int = Field(description="請給出本次辨識的信心分數(0-100)。畫面清晰完整則為95-100，有雜訊或字跡難辨則降低。")
+    self_confidence: int = Field(description="請給出本次辨識的信心分數(0-100)。畫面清晰完整則為60-100，有雜訊或字跡難辨則降低。")
     note: str = Field(description="若圖片中有任何文字無法歸類到上方標準欄位(例如特殊工法說明文字)，請全文抄錄至此。若無則留空。")
 
 class BeamList(BaseModel):
@@ -62,9 +62,6 @@ class TableExtractor:
         if len(text) < 2:
             return False
         if '@' in text or '#' in text:
-            return False
-        # 尺寸格式 (50x70, 110x250) 不是梁編號      
-        if re.search(r'\d+\s*[xX×*]\s*\d+', text):
             return False
         # 純數字 / 單字母+純數字 (如 195, F11-11, E12) → 不是梁編號，是軸線或尺寸
         if re.match(r'^[A-Za-z]?\d[\d\-]*$', text):
@@ -144,20 +141,21 @@ class TableExtractor:
                 elif pos_y == "中": pos_label = f"正{pos_x}方"
                 else: pos_label = f"{pos_x}{pos_y}方"
                 
-                # 極端邊緣標記 (例如最邊緣15%)
+                # 極端邊緣標記 (例如最邊緣10%)
                 edge_tags = []
-                if rx < 0.15: edge_tags.append("極左邊緣")
-                if rx > 0.85: edge_tags.append("極右邊緣")
-                if ry < 0.15: edge_tags.append("極上邊緣")
-                if ry > 0.85: edge_tags.append("極下邊緣")
+                if rx < 0.10: edge_tags.append("極左邊緣")
+                if rx > 0.90: edge_tags.append("極右邊緣")
+                if ry < 0.10: edge_tags.append("極上邊緣")
+                if ry > 0.90: edge_tags.append("極下邊緣")
                 
                 if edge_tags:
                     pos_label += " (" + ", ".join(edge_tags) + ")"
 
                 clean_text = text.strip()
                 # 專門防護 OCR 將長引出線誤判為「減號」的情況 (例如 "-16-#4@15" 變成 "16-#4@15")
+                # 以及全形或各種長度的破折號 (如 '—' 或 '–')
                 # 這也順便清除了周遭的雜點符號。只清頭尾，不影響單字裡面的 "-" (如 B1-6)。
-                clean_text = clean_text.strip('-_.= ')
+                clean_text = clean_text.strip('-_.= —–~')
                 if not clean_text:
                     continue
                 
@@ -181,38 +179,56 @@ class TableExtractor:
             return "", []
 
     def _refresh_ocr_hint(self, ctx) -> str:
-        """物理裁切後，根據新圖布大小與位移量，重算 OCR 的「上下左右」提示字串"""
+        """物理裁切後，根據實體梁框與柱線，重新計算精確的物理九宮格方位提示"""
         w, h = ctx.img.width, ctx.img.height
         if w == 0 or h == 0: return ""
         
+        # 缺柱線時：以水平梁邊緣(h_beam_edge)的端點作為替代的左右邊界
+        left_col = ctx.left_col
+        right_col = ctx.right_col
+        if left_col is None or right_col is None:
+            h_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
+            if h_edges:
+                min_h_x = min(l.x for l in h_edges)
+                max_h_x = max((l.x + l.w) for l in h_edges)
+                if left_col is None: left_col = min_h_x
+                if right_col is None: right_col = max_h_x
+
+        left_bound = left_col if left_col is not None else 0
+        right_bound = right_col if right_col is not None else w
+        top_bound = ctx.beam_top if ctx.beam_top is not None else h / 3.0
+        bottom_bound = ctx.beam_bottom if ctx.beam_bottom is not None else h * (2.0/3.0)
+        
+        beam_len = right_bound - left_bound
+        # 梁長度範圍中間 40% (即左右各留 30%)
+        mid_x_start = left_bound + beam_len * 0.3
+        mid_x_end = right_bound - beam_len * 0.3
+        
+        ctx.grid_mid_x_start = mid_x_start
+        ctx.grid_mid_x_end = mid_x_end
+        ctx.grid_top_bound = top_bound - 5
+        ctx.grid_bottom_bound = bottom_bound + 5
+            
+        import re
         texts = []
         for item in ctx.ocr_items:
             cx, cy = item["cx"], item["cy"]
-            rx, ry = cx / w, cy / h
             
-            if rx < 0.33: pos_x = "左"
-            elif rx > 0.67: pos_x = "右"
+            # X 軸分段
+            if cx < mid_x_start: pos_x = "左"
+            elif cx > mid_x_end: pos_x = "右"
             else: pos_x = "中"
             
-            if ry < 0.33: pos_y = "上"
-            elif ry > 0.67: pos_y = "下"
+            # Y 軸分段 (加減 5px 容差避免邊緣判定抖動)
+            if cy < top_bound - 5: pos_y = "上"
+            elif cy > bottom_bound + 5: pos_y = "下"
             else: pos_y = "中"
-
+            
             if pos_x == "中" and pos_y == "中": pos_label = "正中央"
             elif pos_x == "中": pos_label = f"正{pos_y}方"
             elif pos_y == "中": pos_label = f"正{pos_x}方"
-            else: pos_label = f"{pos_x}{pos_y}方"
+            else: pos_label = f"{pos_x}{pos_y}方" # 例如: 左上方
             
-            edge_tags = []
-            if rx < 0.15: edge_tags.append("極左邊緣")
-            if rx > 0.85: edge_tags.append("極右邊緣")
-            if ry < 0.15: edge_tags.append("極上邊緣")
-            if ry > 0.85: edge_tags.append("極下邊緣")
-            
-            if edge_tags:
-                pos_label += " (" + ", ".join(edge_tags) + ")"
-                
-            import re
             clean_text = item["text"]
             
             # OCR 預讀作弊: 針對純數字或是帶有 L= 的尺寸格式，強制塞入強烈暗示
@@ -221,10 +237,12 @@ class TableExtractor:
             is_pure_num = re.match(r'^\d{2,4}$', clean_text.strip())
             # 放寬條件：只要位置偏上方或下方，且是純數字，就給出暗示
             if is_lap or (is_pure_num and ("上" in pos_label or "下" in pos_label)):
-                hint = " [🌟系統暗示: 極可能是搭接長度]"
+                hint = " [🌟搭接長度]"
                 
-            conf = item["conf"]
+            conf = item.get("conf", 1.0)
             texts.append(f'  "{clean_text}" @ {pos_label}{hint} (信心:{conf:.0%})')
+            # 儲存位置資訊供報告使用
+            item["pos_label"] = pos_label
             
         return "\n".join(texts)
 
@@ -264,23 +282,31 @@ class TableExtractor:
         # 先以 Y 排序，再以 X 排序 (確保由上而下、由左而右)
         h_segments.sort(key=lambda s: (s[0], s[3]))
         
-        # 分組：Y 座標相差 ≤3px 且 X 軸斷層不大於 50px (被標註線穿過) 的視為同一條線並接合
-        y_groups = []  # [(representative_y, merged_width, total_h_for_avg, count, left_x)]
-        for seg_y, seg_w, seg_h, seg_x in h_segments:
-            merged = False
-            for gi, (gy, gw, gh, gc, gx) in enumerate(y_groups):
-                if abs(seg_y - gy) <= 3:
-                    # 檢查 X 軸是否足夠靠近
-                    gap = max(0, max(gx, seg_x) - min(gx + gw, seg_x + seg_w))
-                    if gap < 50:
-                        new_x = min(gx, seg_x)
-                        new_end = max(gx + gw, seg_x + seg_w)
-                        new_w = new_end - new_x
-                        y_groups[gi] = (gy, new_w, gh + seg_h, gc + 1, new_x)
-                        merged = True
-                        break
-            if not merged:
-                y_groups.append((seg_y, seg_w, seg_h, 1, seg_x))
+        # 分組：Y 座標相差趨近 且 X 軸斷層不大於 30px (被標註線穿過) 的視為同一條線並反覆接合
+        y_groups = [(seg_y, seg_w, seg_h, 1, seg_x) for seg_y, seg_w, seg_h, seg_x in h_segments]
+        
+        changed = True
+        while changed:
+            changed = False
+            new_groups = []
+            for y_item in y_groups:
+                seg_y, seg_w, seg_h, seg_c, seg_x = y_item
+                merged = False
+                for gi, (gy, gw, gh, gc, gx) in enumerate(new_groups):
+                    if abs(seg_y - gy) <= 4:
+                        # 檢查 X 軸是否足夠靠近
+                        gap = max(0, max(gx, seg_x) - min(gx + gw, seg_x + seg_w))
+                        if gap < 30:
+                            new_x = min(gx, seg_x)
+                            new_end = max(gx + gw, seg_x + seg_w)
+                            new_w = new_end - new_x
+                            new_groups[gi] = (gy, new_w, gh + seg_h, gc + seg_c, new_x)
+                            merged = True
+                            changed = True
+                            break
+                if not merged:
+                    new_groups.append(y_item)
+            y_groups = new_groups
         
         # 尋找梁編號的最大合法 Y 座標 (梁下緣線不能在梁編號的下面)
         max_valid_bottom_y = float('inf')
@@ -583,6 +609,32 @@ class TableExtractor:
                     ctx.left_col = max(left_cols)
                 if right_cols:
                     ctx.right_col = min(right_cols)
+                    
+            # 缺柱線完美降級 (Fallback): 若無法確認左或右柱緣，提取 h_beam_edge 兩端當作柱線
+            if ctx.left_col is None or ctx.right_col is None:
+                h_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
+                if h_edges:
+                    min_h_x = min(l.x for l in h_edges)
+                    max_h_x = max((l.x + l.w) for l in h_edges)
+                    fallback_y = min(l.y for l in h_edges)
+                    fallback_bot_y = max((l.y + l.h) for l in h_edges)
+                    fallback_h = fallback_bot_y - fallback_y
+                    
+                    if ctx.left_col is None:
+                        ctx.left_col = min_h_x
+                        ctx.all_cols_sorted.append(min_h_x)
+                        ctx.lines.append(DetectedLine(
+                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="水平邊緣降級",
+                            x=min_h_x, y=fallback_y, w=3, h=fallback_h
+                        ))
+                    if ctx.right_col is None:
+                        ctx.right_col = max_h_x
+                        ctx.all_cols_sorted.append(max_h_x)
+                        ctx.lines.append(DetectedLine(
+                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="水平邊緣降級",
+                            x=max_h_x, y=fallback_y, w=3, h=fallback_h
+                        ))
+                    ctx.all_cols_sorted.sort()
 
     # ================================================================
     # Debug 七彩診斷繪圖 (從 CropContext 讀取所有偵測物件)
@@ -601,23 +653,36 @@ class TableExtractor:
         draw_gemini = ImageDraw.Draw(img_gemini)
         drawn_lines = False
         
-        # 紅線：最終裁切邊界 (同時畫在 debug 和 gemini 圖上)
+        # 紅線：最終裁切邊界
         if ctx.left_col is not None:
             final_x = max(0, ctx.left_col - offset_margin)
             draw.line([(final_x, 0), (final_x, ctx.img.height)], fill="red", width=8)
-            draw_gemini.line([(final_x, 0), (final_x, ctx.img.height)], fill="red", width=8)
             drawn_lines = True
         if ctx.right_col is not None:
             final_x = min(ctx.img.width, ctx.right_col + offset_margin)
             draw.line([(final_x, 0), (final_x, ctx.img.height)], fill="red", width=8)
-            draw_gemini.line([(final_x, 0), (final_x, ctx.img.height)], fill="red", width=8)
             drawn_lines = True
         
-        # 粉紅線：梁上下緣
+        # 粉紅線：梁實體上下緣
         if ctx.beam_top is not None:
             draw.line([(0, ctx.beam_top), (ctx.img.width, ctx.beam_top)], fill=(255, 105, 180), width=4)
         if ctx.beam_bottom is not None:
             draw.line([(0, ctx.beam_bottom), (ctx.img.width, ctx.beam_bottom)], fill=(255, 105, 180), width=4)
+            
+        # 青色線 (Cyan)：九宮格 OCR 定位界線 (畫在 debug 和 gemini 圖上)
+        if getattr(ctx, "grid_mid_x_start", None) is not None:
+            draw.line([(ctx.grid_mid_x_start, 0), (ctx.grid_mid_x_start, ctx.img.height)], fill=(0, 255, 255), width=3)
+            draw_gemini.line([(ctx.grid_mid_x_start, 0), (ctx.grid_mid_x_start, ctx.img.height)], fill=(0, 255, 255), width=3)
+        if getattr(ctx, "grid_mid_x_end", None) is not None:
+            draw.line([(ctx.grid_mid_x_end, 0), (ctx.grid_mid_x_end, ctx.img.height)], fill=(0, 255, 255), width=3)
+            draw_gemini.line([(ctx.grid_mid_x_end, 0), (ctx.grid_mid_x_end, ctx.img.height)], fill=(0, 255, 255), width=3)
+            
+        if getattr(ctx, "grid_top_bound", None) is not None:
+            draw.line([(0, ctx.grid_top_bound), (ctx.img.width, ctx.grid_top_bound)], fill=(0, 255, 255), width=3)
+            draw_gemini.line([(0, ctx.grid_top_bound), (ctx.img.width, ctx.grid_top_bound)], fill=(0, 255, 255), width=3)
+        if getattr(ctx, "grid_bottom_bound", None) is not None:
+            draw.line([(0, ctx.grid_bottom_bound), (ctx.img.width, ctx.grid_bottom_bound)], fill=(0, 255, 255), width=3)
+            draw_gemini.line([(0, ctx.grid_bottom_bound), (ctx.img.width, ctx.grid_bottom_bound)], fill=(0, 255, 255), width=3)
         
         # 垂直線：根據 kind 上色
         for d in ctx.lines:
@@ -843,11 +908,26 @@ class TableExtractor:
                     pdf_left = ctx_scan.to_pdf_x(ctx_scan.left_col) if ctx_scan.left_col is not None else None
                     pdf_right = ctx_scan.to_pdf_x(ctx_scan.right_col) if ctx_scan.right_col is not None else None
                     
+                    min_obj_x = bbox[2]
+                    max_obj_x = bbox[0]
+                    for item in ctx_scan.ocr_items:
+                        item_pdf_min = ctx_scan.to_pdf_x(item["min_x"])
+                        item_pdf_max = ctx_scan.to_pdf_x(item["max_x"])
+                        if item_pdf_min < min_obj_x: min_obj_x = item_pdf_min
+                        if item_pdf_max > max_obj_x: max_obj_x = item_pdf_max
+                    for line in ctx_scan.lines:
+                        line_pdf_min = line.abs_x
+                        line_pdf_max = line.abs_x + max(line.abs_w, 1.0)
+                        if line_pdf_min < min_obj_x: min_obj_x = line_pdf_min
+                        if line_pdf_max > max_obj_x: max_obj_x = line_pdf_max
+                    
                     scan_results.append({
                         "b_min_x": bbox[0],
                         "b_max_x": bbox[2],
                         "pdf_left": pdf_left,
-                        "pdf_right": pdf_right
+                        "pdf_right": pdf_right,
+                        "min_obj_x": min_obj_x,
+                        "max_obj_x": max_obj_x
                     })
                     
                 # 執行修復邏輯
@@ -888,24 +968,30 @@ class TableExtractor:
                 # 極端邊緣修剪
                 if len(scan_results) > 0:
                     first = scan_results[0]
-                    if first["pdf_left"] is not None and (first["pdf_left"] - first["b_min_x"]) > 33.3:
-                        old_left = cv_bboxes[0][0]
-                        cv_bboxes[0][0] = first["pdf_left"] - 13.3
-                        move = cv_bboxes[0][0] - old_left
-                        msg = f"[最左邊緣修剪] 圖塊 0 的左側有過多空白，向內收縮。\n  > 左邊框線移動: {move*3:.1f}px (捨棄了外部無效畫面)\n"
-                        print(msg.strip())
-                        with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
-                            _f_heal.write(msg + "\n")
+                    if first["pdf_left"] is not None:
+                        # 收縮極限：不能切掉任何實體構件 (保護最左側的文字與線條)
+                        safe_left = min(first["pdf_left"] - 13.3, first["min_obj_x"] - 5.0)
+                        if (safe_left - first["b_min_x"]) > 33.3:
+                            old_left = cv_bboxes[0][0]
+                            cv_bboxes[0][0] = safe_left
+                            move = cv_bboxes[0][0] - old_left
+                            msg = f"[最左邊緣修剪] 圖塊 0 的左側有過多空白，向內收縮。\n  > 左邊框線移動: {move*3:.1f}px (在最左構件邊緣 {first['min_obj_x']*3:.1f}px 處停刀)\n"
+                            print(msg.strip())
+                            with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
+                                _f_heal.write(msg + "\n")
                     
                     last = scan_results[-1]
-                    if last["pdf_right"] is not None and (last["b_max_x"] - last["pdf_right"]) > 33.3:
-                        old_right = cv_bboxes[-1][2]
-                        cv_bboxes[-1][2] = last["pdf_right"] + 13.3
-                        move = cv_bboxes[-1][2] - old_right
-                        msg = f"[最右邊緣修剪] 圖塊 {len(scan_results)-1} 的右側有過多空白，向內收縮。\n  > 右邊框線移動: {move*3:.1f}px (捨棄了外部無效畫面)\n"
-                        print(msg.strip())
-                        with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
-                            _f_heal.write(msg + "\n")
+                    if last["pdf_right"] is not None:
+                        # 收縮極限：不能切掉任何實體構件 (保護最右側的文字與線條)
+                        safe_right = max(last["pdf_right"] + 13.3, last["max_obj_x"] + 5.0)
+                        if (last["b_max_x"] - safe_right) > 33.3:
+                            old_right = cv_bboxes[-1][2]
+                            cv_bboxes[-1][2] = safe_right
+                            move = old_right - cv_bboxes[-1][2]
+                            msg = f"[最右邊緣修剪] 圖塊 {len(scan_results)-1} 的右側有過多空白，向內收縮。\n  > 右邊框線移動: {move*3:.1f}px (在最右構件邊緣 {last['max_obj_x']*3:.1f}px 處停刀)\n"
+                            print(msg.strip())
+                            with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
+                                _f_heal.write(msg + "\n")
 
                 # Healing 後邊界合法性檢查：移除 min_x >= max_x 的無效 bbox
                 valid_bboxes = []
@@ -947,7 +1033,7 @@ class TableExtractor:
                     seen_names = set()
                     unique_beams = []
                     for b in sorted(beam_ids, key=lambda x: x["cx"]):
-                        name = re.sub(r'[\s\-_]', '', b["text"]).upper()
+                        name = re.sub(r'[\s\-_]', '', b["text"])
                         if name not in seen_names:
                             seen_names.add(name)
                             unique_beams.append(b)
@@ -1123,14 +1209,12 @@ class TableExtractor:
                             # === 真實物理裁切 (Physical Crop Pass 2) ===
                             if final_left > 0 or final_right < ctx.img.width:
                                 ctx.img = ctx.img.crop((final_left, 0, final_right, ctx.img.height))
-                                # 過濾裁切外的 OCR 文字框
-                                new_ocr_items = []
-                                for item in ctx.ocr_items:
-                                    cx_val = (item["min_x"] + item["max_x"]) / 2
-                                    if final_left <= cx_val <= final_right:
-                                        new_ocr_items.append(item)
-                                ctx.ocr_items = new_ocr_items
                                 ctx.shift_after_crop(final_left)
+                                
+                                # 對物理裁切後的乾淨小圖重跑一次 OCR，捨棄舊座標，避免邊緣雜訊干擾
+                                ocr_hint_pass2, new_ocr_items = self._run_ocr(ctx.img)
+                                ctx.ocr_hint = ocr_hint_pass2
+                                ctx.ocr_items = new_ocr_items
                             
                             # === Pass 2: 純淨小圖精準偵測 ===
                             ctx.clear_lines()
@@ -1138,111 +1222,146 @@ class TableExtractor:
                             
                             # === 重新校準 OCR 提示 (因物理裁切導致畫布座標改變) ===
                             ocr_hint_refreshed = self._refresh_ocr_hint(ctx)
-                            ocr_section = ""
-                            if ocr_hint_refreshed:
-                                ocr_section = (
-                                    "【OCR 預掃結果】以下是 OCR 引擎從『裁切後』的這張小圖偵測到的文字與「精確相對位置」（請參考此精確座標判定左中右）：\n"
-                                    f"{ocr_hint_refreshed}\n\n"
-                                )
                             
+                            # 儲存最後一次 OCR 的結果到 txt
+                            os.makedirs("crops/debug_col", exist_ok=True)
+                            with open(f"crops/debug_col/crop_{index}_ocr.txt", "w", encoding="utf-8") as f:
+                                f.write(ocr_hint_refreshed)
+                                
                             # === 繪圖 + 存檔 ===
                             img_gemini, drawn_lines, red_line_hint = self._draw_debug(ctx, index)
                             img_gemini.save(f"crops/crop_{index}{file_suffix}.png")
-
-                            prompt = (
-                                f"{ocr_section}"
-                                "這是一張經過系統『精準裁剪』的「單跨梁配筋詳圖」，圖片的左右邊界已經完美的貼合了這根梁的實際端點。請仔細讀取並解析配筋數據。\n\n"
-                                "【解析規則】\n"
-                                "1. 水平位置對應：這張圖切分為 左端(前30%)、中央(中40%)、右端(後30%)。若 OCR 預掃清單告訴你某個文字在「正上方/正下方/正中央」，這『絕對』是中央位置(_mid)的主筋或箍筋！絕對不可以因為右邊剛好沒畫面，就把原本在中央的東西『錯誤擠到右邊去』！請嚴格依照它的絕對位置填表。\n"
-                                "2. 只讀取實體墨水：你是一名嚴格的數據萃取員。畫面上有繪製文字的地方你才寫，沒有文字的地方請直接留空 (字串填 ''、陣列填 [])。嚴禁依靠工程常理去『猜測』或『複製』別格的數字來填補空白！\n"
-                                "2.5 OCR 容錯：OCR 預掃結果偶爾會出錯。如果 OCR 文字看起來不像任何工程標註格式，請無視該筆 OCR的內容，直接用你的視覺能力從圖片上讀取正確數值。\n"
-                                "3. 主鋼筋陣列：主鋼筋分為上層(梁圖例之上)與下層(梁圖例之下)。同一個位置若有數排數字，請依序放入陣列 `['5-#8', '3-#8']`。如果只有一排，就是 `['5-#8']`。\n"
-                                "4. 搭接長度：圖面最上方或最下方偶爾會出現獨立的二位或三位數數字(例如80, 150, 420)，若其偏左請填入搭接長度(左)，偏右則填入搭接長度(右)。搭接長度通常是純數字，沒有鋼筋符號，若在上下邊緣看到孤立數字，極高機率是它，千萬別漏掉！\n"
-                                "5. 梁編號與尺寸：通常位於圖面上端或下端。請準確找尋並帶入 (例如 beam_id: 'G1', dimensions: '40x80')。\n"
-                                "6. 圖紙邊緣文字：如果在極度邊緣或裁切邊有殘留的破裂文字，可能是掃描到的其他梁圖紙渣滓，請忽略它。\n"
-                                "7. 非配筋無關圖片：如果這張圖只是一張表格的純標題 (例如寫著『梁配筋標準圖』) 而沒有任何鋼筋繪製，請直接回傳空陣列 `[]`。\n"
-                                "請直接輸出 JSON 格式的 BeamList 資料，不要有其他廢話。"
-                            )
                             
-                            # === 推論/多數決 ===
-                            if voting_rounds <= 1:
-                                single_config = genai.GenerationConfig(
-                                    response_mime_type="application/json",
-                                    response_schema=BeamList
-                                )
-                                crops_beams = await _single_inference(img_gemini, prompt, single_config, index)
-                            else:
-                                temps = [0.2, 0.5, 0.8][:voting_rounds]
-                                round_results = []
-                                for t_idx, temp in enumerate(temps):
-                                    vote_config = genai.GenerationConfig(
-                                        response_mime_type="application/json",
-                                        response_schema=BeamList,
-                                        temperature=temp
-                                    )
-                                    r = await _single_inference(img_gemini, prompt, vote_config, index)
-                                    if r is not None:
-                                        round_results.append(r)
-                                        print(f"[Voting] 片段 {index} (Retry:{retry_count}) 第 {t_idx+1}/{voting_rounds} 輪完成, 偵測到 {len(r)} beams")
+                            # === OCR-First: 規則引擎直接分配欄位 ===
+                            from core.ocr_field_assigner import assign_fields, classify_text, FormatType
+                            rule_beam, low_conf_items = assign_fields(ctx.ocr_items, ctx)
+                            
+                            # === Fallback: 如果 beam_id 為空，回去未裁切的 OCR 掃描結果找 ===
+                            if not rule_beam.get("beam_id") and ocr_items:
+                                from core.normalizer import normalize_text as _norm
+                                for item in ocr_items:
+                                    if classify_text(item["text"]) == FormatType.BEAM_ID:
+                                        rule_beam["beam_id"] = _norm(item["text"])
+                                        print(f"  [Fallback] 從原始 OCR 找到 beam_id: '{rule_beam['beam_id']}'")
+                                        break
+                            
+                            # === Fallback: dimensions 也可能被裁切過濾掉 ===
+                            if not rule_beam.get("dimensions") and ocr_items:
+                                import re as _re
+                                for item in ocr_items:
+                                    clean_txt = item["text"].strip().strip('-_.= —–~()（）[]【】')
+                                    if _re.match(r'^\d+\s*[xX×*]\s*\d+$', clean_txt):
+                                        from core.normalizer import normalize_text as _norm2
+                                        rule_beam["dimensions"] = _norm2(item["text"])
+                                        print(f"  [Fallback] 從原始 OCR 找到 dimensions: '{rule_beam['dimensions']}'")
+                                        break
+                            
+                            # 判斷是否需要 LLM 補位
+                            needs_llm = bool(low_conf_items) or not rule_beam.get("beam_id")
+                            
+                            if needs_llm and self.model:
+                                # === LLM Fallback: 只處理規則引擎搞不定的部分 ===
+                                print(f"[OCR-First] 片段 {index}: 需要 LLM 補位 ({len(low_conf_items)} 筆低信心項目)")
                                 
-                                if round_results:
-                                    crops_beams = self._merge_voting_rounds(round_results)
+                                # 建構精簡 prompt — 告訴 LLM 哪些已確定、哪些需要它幫忙
+                                already_filled = []
+                                for k, v in rule_beam.items():
+                                    if k in ("self_confidence", "note", "crop_index", "_ocr_text", "_crop_file"):
+                                        continue
+                                    if isinstance(v, list) and v:
+                                        already_filled.append(f"  {k} = {v}")
+                                    elif isinstance(v, str) and v:
+                                        already_filled.append(f"  {k} = '{v}'")
+                                
+                                filled_section = ""
+                                if already_filled:
+                                    filled_section = "【已確定欄位】規則引擎已填入以下欄位（請勿覆蓋）：\n" + "\n".join(already_filled) + "\n\n"
+                                
+                                uncertain_section = ""
+                                if low_conf_items:
+                                    uncertain_lines = []
+                                    for item in low_conf_items:
+                                        uncertain_lines.append(f'  "{item["text"]}" @ {item.get("pos_label", "?")} (信心:{item.get("conf", 0):.0%})')
+                                    uncertain_section = "【待判斷項目】以下 OCR 項目規則引擎無法確定，請幫忙分配到正確欄位：\n" + "\n".join(uncertain_lines) + "\n\n"
+                                
+                                ocr_section = ""
+                                if ocr_hint_refreshed:
+                                    ocr_section = (
+                                        "【OCR 預掃結果】以下是 OCR 引擎偵測到的所有文字與精確位置（供參考）：\n"
+                                        f"{ocr_hint_refreshed}\n\n"
+                                    )
+                                
+                                prompt = (
+                                    f"{ocr_section}"
+                                    f"{filled_section}"
+                                    f"{uncertain_section}"
+                                    "這是一張經過系統『精準裁剪』的「單跨梁配筋詳圖」，圖片的左右邊界已經貼合了這根梁的端點。請仔細讀取並解析配筋數據。\n\n"
+                                    "【解析規則】\n"
+                                    "1. 實體幾何定位：本系統已根據最精確的物理梁框與柱線，劃分出實體九宮格方位（如 左上方、正下方、正中央 等）。圖片上的【青色實線】即為九宮格的劃分邊界，請參考此網格線輔助您判斷文字的實際所屬區塊。若提示文字在「正中央」或「正上方/正下方」，這代表該文字位於梁長度中央區段（_mid）！若提示在「左上方/正左方/左下方」，則完全屬於左端(_left)！如果在「右上方/正右方/右下方」，則屬右端(_right)！\n"
+                                    "2. 只填寫實際看到的！每一個欄位只填入圖面上「確實標示」的配筋數據。如果某個位置沒有標示，就留空/空陣列。後端會自動推斷處理。\n"
+                                    "3. ⚠️嚴禁混淆主筋與箍筋！主筋格式為 `N-#S` (如 3-#8)，絕不含 @。箍筋格式為 `N-#S@D` (如 13-#4@15)，一定含 @。\n"
+                                    "4. 搭接長度：圖面上方區域的純數字是上層搭接長度(lap_length_top_*)，下方區域的是下層搭接長度(lap_length_bottom_*)。\n"
+                                    "5. 梁編號與尺寸：通常位於圖面上端或下端。請準確找尋並帶入。\n"
+                                    "6. 如果這張圖只是純標題而沒有任何鋼筋繪製，請直接回傳空陣列 `[]`。\n"
+                                    "請直接輸出 JSON 格式的 BeamList 資料。"
+                                )
+                                
+                                # === LLM 推論 ===
+                                if voting_rounds <= 1:
+                                    single_config = genai.GenerationConfig(
+                                        response_mime_type="application/json",
+                                        response_schema=BeamList
+                                    )
+                                    llm_beams = await _single_inference(img_gemini, prompt, single_config, index)
                                 else:
-                                    crops_beams = None
+                                    temps = [0.2, 0.5, 0.8][:voting_rounds]
+                                    round_results = []
+                                    for t_idx, temp in enumerate(temps):
+                                        vote_config = genai.GenerationConfig(
+                                            response_mime_type="application/json",
+                                            response_schema=BeamList,
+                                            temperature=temp
+                                        )
+                                        r = await _single_inference(img_gemini, prompt, vote_config, index)
+                                        if r is not None:
+                                            round_results.append(r)
+                                    if round_results:
+                                        llm_beams = self._merge_voting_rounds(round_results)
+                                    else:
+                                        llm_beams = None
+                                
+                                if llm_beams and len(llm_beams) > 0:
+                                    # === 合併策略：規則引擎的高信心值優先，LLM 填補空缺 ===
+                                    llm_beam = llm_beams[0]  # 通常單跨只有一筆
+                                    for k, v in llm_beam.items():
+                                        if k in ("self_confidence", "note", "crop_index"):
+                                            continue
+                                        rule_val = rule_beam.get(k)
+                                        # 規則引擎已填的不覆蓋
+                                        if isinstance(rule_val, list) and rule_val:
+                                            continue
+                                        if isinstance(rule_val, str) and rule_val:
+                                            continue
+                                        # LLM 有值就補位
+                                        if isinstance(v, list) and v:
+                                            rule_beam[k] = v
+                                            print(f"  [LLM補位] {k} = {v}")
+                                        elif isinstance(v, str) and v:
+                                            rule_beam[k] = v
+                                            print(f"  [LLM補位] {k} = '{v}'")
+                                    
+                                    crops_beams = [rule_beam]
+                                else:
+                                    # LLM 也失敗了，就用規則引擎的結果
+                                    crops_beams = [rule_beam]
+                            else:
+                                # === 全部高信心，不需要 LLM ===
+                                print(f"[OCR-First] 片段 {index}: 全部高信心！免 LLM 呼叫 ✅")
+                                crops_beams = [rule_beam]
 
                             if crops_beams is None:
                                 break # 嚴重錯誤直接失敗
                                 
-                            # === 適應性裁切 (Adaptive Re-cropping) ===
-                            if retry_count == 0 and len(crops_beams) > 0:
-                                # 提取預測的所有字串（忽略大小寫、空白）
-                                pred_texts = []
-                                for b in crops_beams:
-                                    for v in b.values():
-                                        if isinstance(v, list):
-                                            for item in v: pred_texts.append(str(item).replace(" ", "").lower())
-                                        else:
-                                            pred_texts.append(str(v).replace(" ", "").lower())
-                                
-                                trim_left = 0
-                                trim_right = 0
-                                img_w = ctx.img.width
-                                has_trim = False
-                                
-                                for item in ctx.ocr_items:
-                                    if item["is_extreme"]:
-                                        raw_t = item["text"].replace(" ", "").lower()
-                                        used = False
-                                        # 檢查是否被使用
-                                        for pt in pred_texts:
-                                            if raw_t in pt or pt in raw_t:
-                                                used = True
-                                                break
-                                        
-                                        if not used:
-                                            if "極左" in item["pos_label"]:
-                                                # 使用由 CropContext 提供的絕對座標系
-                                                raw_pdf_x = ctx.to_pdf_x(item["max_x"])
-                                                trim_dist = raw_pdf_x - current_bbox[0]
-                                                trim_left = max(trim_left, trim_dist + 2)
-                                                has_trim = True
-                                            elif "極右" in item["pos_label"]:
-                                                raw_pdf_min = ctx.to_pdf_x(item["min_x"])
-                                                trim_dist = current_bbox[2] - raw_pdf_min
-                                                trim_right = max(trim_right, trim_dist + 2)
-                                                has_trim = True
-                                
-                                if has_trim:
-                                    new_left = current_bbox[0] + trim_left
-                                    new_right = current_bbox[2] - trim_right
-                                    # 確保新的裁切框夠寬 (至少 30 pts)
-                                    if new_right - new_left > 30:
-                                        current_bbox[0] = new_left
-                                        current_bbox[2] = new_right
-                                        print(f"[Adaptive Cropping] 偵測到邊際孤兒字，片段 {index} 啟動重新裁切重試...")
-                                        continue
-                                
-                            # 若無須裁切或已完成第二次重試，跳出迴圈
                             break
                             
                         # (迴圈外) 更新結果並回傳
@@ -1279,6 +1398,13 @@ class TableExtractor:
                                     "score_text": ln.score_text
                                 })
                             b["_debug_lines"] = debug_lines_data
+                            
+                            b["_final_bbox"] = {
+                                "abs_x0": round(ctx.to_pdf_x(0), 2),
+                                "abs_y0": round(ctx.to_pdf_y(0), 2),
+                                "abs_x1": round(ctx.to_pdf_x(ctx.img.width), 2),
+                                "abs_y1": round(ctx.to_pdf_y(ctx.img.height), 2)
+                            }
                             
                             print(f"[Gemini Vision] 片段 {index} 產出：{b.get('beam_id', 'Unknown')}")
                         
@@ -1358,6 +1484,38 @@ class TableExtractor:
                                         fy = ln["abs_free_y"] * 3.0
                                         if lx < x or rx > x:
                                             draw.line([(lx, fy), (rx, fy)], fill=(255, 255, 0), width=3)
+                                            
+                        if "_final_bbox" in b:
+                            fb = b["_final_bbox"]
+                            sx0, sy0 = fb["abs_x0"] * 3.0, fb["abs_y0"] * 3.0
+                            sx1, sy1 = fb["abs_x1"] * 3.0, fb["abs_y1"] * 3.0
+                            
+                            # 繪製虛線邊框 (Dashed line) function
+                            def draw_dashed_box(d, x0, y0, x1, y1, fill, width, dash_len=10):
+                                lines = [
+                                    ((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)),
+                                    ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))
+                                ]
+                                for pt1, pt2 in lines:
+                                    dx, dy = pt2[0] - pt1[0], pt2[1] - pt1[1]
+                                    dist = (dx**2 + dy**2)**0.5
+                                    if dist == 0: continue
+                                    vx, vy = dx/dist, dy/dist
+                                    curr_len = 0
+                                    drawn = True
+                                    while curr_len < dist:
+                                        step = min(dash_len, dist - curr_len)
+                                        if drawn:
+                                            nx1, ny1 = pt1[0] + vx*curr_len, pt1[1] + vy*curr_len
+                                            nx2, ny2 = nx1 + vx*step, ny1 + vy*step
+                                            d.line([(nx1, ny1), (nx2, ny2)], fill=fill, width=width)
+                                        curr_len += step
+                                        drawn = not drawn
+                                        
+                            draw_dashed_box(draw, sx0, sy0, sx1, sy1, fill=(255, 165, 0), width=6, dash_len=15)
+                            # 在左上角標示 crop 短檔名
+                            crop_fname = b.get("_crop_file", "crop")
+                            draw.text((sx0 + 5, sy0 + 5), crop_fname, fill=(255, 165, 0))
     
                     os.makedirs("crops", exist_ok=True)
                     debug_img.save("crops/debug_full_pdf.png")

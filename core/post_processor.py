@@ -21,6 +21,19 @@ def apply_structural_rules(beam_dict: dict) -> dict:
         
     b = dict(beam_dict)  # 複製一份避免污染原始資料
     
+    # === 規則 0: 格式防護 — 主筋欄位絕不能含有箍筋值 (@符號) ===
+    main_bar_keys = [
+        "top_main_bars_left", "top_main_bars_mid", "top_main_bars_right",
+        "bottom_main_bars_left", "bottom_main_bars_mid", "bottom_main_bars_right"
+    ]
+    for mk in main_bar_keys:
+        vals = b.get(mk, [])
+        if isinstance(vals, list):
+            cleaned = [v for v in vals if '@' not in str(v)]
+            if len(cleaned) != len(vals):
+                print(f"[後處理] ⚠️ 格式防護：{mk} 中發現箍筋值 {[v for v in vals if '@' in str(v)]}，已移除")
+                b[mk] = cleaned
+    
     def process_main_bars(b_dict, k_l, k_m, k_r, is_top):
         v_l = b_dict.get(k_l, [])
         v_m = b_dict.get(k_m, [])

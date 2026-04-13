@@ -60,6 +60,12 @@ class CropContext:
     right_col: Optional[float] = None
     all_cols_sorted: list = field(default_factory=list)
 
+    # 實體網格劃分界線 (用於 LLM 視覺提示)
+    grid_mid_x_start: Optional[float] = None
+    grid_mid_x_end: Optional[float] = None
+    grid_top_bound: Optional[float] = None
+    grid_bottom_bound: Optional[float] = None
+
     # 物理裁切偏移紀錄
     crop_offset_x: float = 0
 

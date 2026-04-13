@@ -222,13 +222,17 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
     # === 統一合併配對 (不區分母子了) ===
     # 為避免漏抓，我們使用模糊配對機制
     aligned_pairs = []
-    # 建立一個副本進行追蹤
     unmatched_exp = expected_beams.copy()
+    unmatched_pred = []
     
+    # Pass 1: 基於 beam_id 的精確與模糊配對
     for pred in aligned:
         pred_id = normalize_text(pred.get("beam_id", ""))
-        matched_exp = exp_by_id.get(pred_id)
+        matched_exp = None
         
+        if pred_id and pred_id in exp_by_id and exp_by_id[pred_id] in unmatched_exp:
+            matched_exp = exp_by_id[pred_id]
+            
         # 如果精確比對失敗，且有值，嘗試模糊比對
         if not matched_exp and pred_id:
             for eid, exp in exp_by_id.items():
@@ -240,12 +244,56 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
                         
         if matched_exp:
             aligned_pairs.append((matched_exp, pred))
-            if matched_exp in unmatched_exp:
-                unmatched_exp.remove(matched_exp)
+            unmatched_exp.remove(matched_exp)
         else:
-            aligned_pairs.append((None, pred))
+            unmatched_pred.append(pred)
+
+    # Pass 2: 內容相似度配對 (Content-based Fallback)
+    # 用於解決「整支梁未偵測到」+「幻覺」，但其實內容極度吻合，只是梁名稱辨識失敗的情況
+    if unmatched_exp and unmatched_pred:
+        def generate_content_signature(beam):
+            sig = []
+            for k in COMPARE_FIELDS:
+                if k == "beam_id": continue
+                v = beam.get(k, "")
+                if k in LIST_FIELDS:
+                    norm = normalize_list(v)
+                    for x in norm:
+                        if x: sig.append(f"{k}:{x}")
+                else:
+                    norm = normalize_text(str(v))
+                    if norm: sig.append(f"{k}:{norm}")
+            return set(sig)
+
+        for i in range(len(unmatched_exp) - 1, -1, -1):
+            if not unmatched_pred: break
+            e_beam = unmatched_exp[i]
+            e_sig = generate_content_signature(e_beam)
+            if not e_sig: continue
             
-    # 將遺漏的 GT 加上去
+            best_p_idx = -1
+            best_score = 0
+            for j, p_beam in enumerate(unmatched_pred):
+                p_sig = generate_content_signature(p_beam)
+                common = len(e_sig.intersection(p_sig))
+                total = len(e_sig.union(p_sig))
+                if total == 0: continue
+                # Dice coefficient
+                score = (2.0 * common) / (len(e_sig) + len(p_sig))
+                
+                # 只有當相似度 > 0.5 且至少有 3 個相同具體欄位時才配對
+                if score > best_score and score > 0.5 and common >= 3:
+                    best_score = score
+                    best_p_idx = j
+                    
+            if best_p_idx != -1:
+                aligned_pairs.append((e_beam, unmatched_pred[best_p_idx]))
+                unmatched_pred.pop(best_p_idx)
+                unmatched_exp.pop(i)
+            
+    # 將遺漏與剩餘的幻覺補齊
+    for pred in unmatched_pred:
+        aligned_pairs.append((None, pred))
     for exp in unmatched_exp:
         aligned_pairs.append((exp, None))
 
@@ -454,31 +502,79 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
         conf = pred.get("self_confidence", "")
         note_val = html_mod.escape(str(pred.get("note", "") or ""))
 
-        return f'''<div class="{card_class}">
-            <div class="beam-header">
-                <span class="beam-idx">#{idx+1}</span>
-                {src_badge}
-                {badge}
-            </div>
-            <div class="beam-grid row-3">
-                {cell("beam_id")}
-                {cell("dimensions")}
-                <div class="field-cell info-field">
-                    <div class="field-label">self confidence</div>
-                    <div class="field-row"><span class="tag tag-pred">AI</span><span class="field-value">{conf}</span></div>
-                </div>
-            </div>
-            <div class="beam-grid row-1">
-                <div class="field-cell info-field" style="grid-column: span 3">
-                    <div class="field-label">note</div>
-                    <div class="field-row"><span class="tag tag-pred">AI</span><span class="field-value note-text">{note_val if note_val else "(無)"}</span></div>
-                </div>
-            </div>
+        ocr_raw = str(pred.get("_ocr_text", "(無 OCR 資料)"))
+        ocr_content_html = f'<pre class="ocr-text">{html_mod.escape(ocr_raw)}</pre>'
+        
+        # 嘗試解析為九宮格結構 (新版與舊版格式相容)
+        cells = {}
+        is_grid_format = False
+        
+        if "[" in ocr_raw and "]: " in ocr_raw:
+            # 新版結構化格式
+            for line in ocr_raw.split('\n'):
+                line = line.strip()
+                if line.startswith('[') and ']: ' in line:
+                    b_end = line.find(']')
+                    key = line[1:b_end]
+                    val = line[line.find(']: ')+3:]
+                    cells[key] = val
+            if len(cells) == 9:
+                is_grid_format = True
+        elif "@" in ocr_raw and "(信心:" in ocr_raw:
+            # 舊版扁平格式，使用正則表達式萃取
+            import re
+            matches = re.finditer(r'"([^"]+)"\s*@\s*([^\s\(]+)(.*?)\(信心:', ocr_raw)
+            temp_cells = {k: [] for k in ["左上方", "正上方", "右上方", "正左方", "正中央", "正右方", "左下方", "正下方", "右下方"]}
+            for m in matches:
+                text = m.group(1)
+                pos = m.group(2)
+                hint = m.group(3).strip()
+                clean_pos = pos.replace("端", "") # 支援舊的「左端上方」寫法
+                if clean_pos in temp_cells:
+                    temp_cells[clean_pos].append(f'"{text}" {hint}'.strip())
+                    is_grid_format = True
+            
+            if is_grid_format:
+                for k in temp_cells:
+                    items = temp_cells[k]
+                    cells[k] = ", ".join(items) if items else "(空)"
 
-            <details class="ocr-panel">
-                <summary>🔍 OCR 預掃結果 — {html_mod.escape(str(pred.get("_crop_file", "")))}</summary>
-                <pre class="ocr-text">{html_mod.escape(str(pred.get("_ocr_text", "(無 OCR 資料)")))}</pre>
-            </details>
+        if is_grid_format:
+            grid_html = '<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; font-family: monospace;">'
+            for key in ["左上方", "正上方", "右上方", "正左方", "正中央", "正右方", "左下方", "正下方", "右下方"]:
+                val = cells.get(key, "(空)")
+                # 用淺灰色背景區分邊距，文字換行以避免過長
+                grid_html += f'<div style="background: #1e293b; border: 1px solid #475569; padding: 6px; border-radius: 4px; font-size: 0.75rem; color: #cbd5e1; word-break: break-all;">'
+                grid_html += f'<div style="color: #94a3b8; font-weight: bold; margin-bottom: 2px;">{key}</div>'
+                grid_html += f'{html_mod.escape(val)}</div>'
+            grid_html += '</div>'
+            ocr_content_html = f'<pre class="ocr-text" style="margin-bottom: 12px;">{html_mod.escape(ocr_raw)}</pre>' + grid_html
+        
+        return f'''<div class="{card_class}">
+                <div class="beam-header">
+                    <span class="beam-idx">#{idx+1}</span>
+                    {src_badge}
+                    {badge}
+                </div>
+                <div class="beam-grid row-3">
+                    {cell("beam_id")}
+                    {cell("dimensions")}
+                    <div class="field-cell info-field">
+                        <div class="field-label">self confidence</div>
+                        <div class="field-row"><span class="tag tag-pred">AI</span><span class="field-value">{conf}</span></div>
+                    </div>
+                </div>
+                <div class="beam-grid row-1">
+                    <div class="field-cell info-field" style="grid-column: span 3">
+                        <div class="field-label">note</div>
+                        <div class="field-row"><span class="tag tag-pred">AI</span><span class="field-value note-text">{note_val if note_val else "(無)"}</span></div>
+                    </div>
+                </div>
+
+                <details class="ocr-panel">
+                    <summary>🔍 OCR 預掃結果 — {html_mod.escape(str(pred.get("_crop_file", "")))}</summary>
+                    {ocr_content_html}
+                </details>
             <div class="section-divider"><span>上層主筋 TOP BARS</span></div>
             <div class="beam-grid row-3">
                 {cell("top_main_bars_left")}
@@ -541,15 +637,15 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
                 if current_group:
                     beams_html += '</div></div>'
                 current_group = grp
-                beams_html += f'<div style="border: 2px dashed #94a3b8; border-radius: 8px; padding: 16px; margin-bottom: 24px; background: #f8fafc;"><h4 style="margin:0 0 12px 0; color: #334155; display:flex; align-items:center; gap:8px;">🔗 連續跨關聯群組: {grp}</h4><div style="display: flex; gap: 16px; flex-wrap: wrap;">'
+                beams_html += f'<div style="border: 2px dashed #94a3b8; border-radius: 8px; padding: 16px; margin-bottom: 24px; background: #f8fafc;"><h4 style="margin:0 0 12px 0; color: #334155; display:flex; align-items:center; gap:8px;">🔗 連續跨關聯群組: {grp}</h4><div style="display: flex; flex-direction: column; gap: 16px;">'
             elif not grp and current_group:
                 beams_html += '</div></div>'
                 current_group = None
                 
             card_html = _render_beam_card(b, i, i)
-            # 讓卡片在連續跨群組中可以正確並排顯示
+            # 讓卡片在連續跨群組中可以正確垂直堆疊
             if current_group:
-                card_html = card_html.replace('margin-bottom: 20px;', 'margin-bottom: 0; min-width: 320px; flex: 1;')
+                card_html = card_html.replace('margin-bottom: 20px;', 'margin-bottom: 0; width: 100%;')
             beams_html += card_html
             
         if current_group:
