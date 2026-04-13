@@ -231,14 +231,24 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
     unmatched_exp = expected_beams.copy()
     unmatched_pred = []
     
+    # 追蹤已被精確匹配消耗的 expected (每筆最多配一次)
+    # 但重名預測 (如 重複-1, 重複-2) 可以共享同一筆 expected
+    used_exp_set = set()  # 使用 id() 追蹤
+    
     # Pass 1: 基於 beam_id 的精確與模糊配對
     for pred in aligned:
         pred_id = normalize_text(pred.get("beam_id", ""))
         matched_exp = None
         
         if pred_id and pred_id in exp_by_ids:
+            # 優先找尚未被配對過的 expected
             for exp in exp_by_ids[pred_id]:
-                if exp in unmatched_exp:
+                if id(exp) not in used_exp_set:
+                    matched_exp = exp
+                    break
+            # 如果全部都已被配對過（重名情境），允許重用第一筆
+            if not matched_exp:
+                for exp in exp_by_ids[pred_id]:
                     matched_exp = exp
                     break
             
@@ -249,7 +259,7 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
                     ratio = min(len(pred_id), len(eid)) / max(len(pred_id), len(eid))
                     if ratio > 0.4:
                         for exp in exps:
-                            if exp in unmatched_exp:
+                            if id(exp) not in used_exp_set:
                                 matched_exp = exp
                                 break
                 if matched_exp:
@@ -257,7 +267,9 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
                         
         if matched_exp:
             aligned_pairs.append((matched_exp, pred))
-            unmatched_exp.remove(matched_exp)
+            used_exp_set.add(id(matched_exp))
+            if matched_exp in unmatched_exp:
+                unmatched_exp.remove(matched_exp)
         else:
             unmatched_pred.append(pred)
 
@@ -569,7 +581,13 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
             ocr_content_html = f'<pre class="ocr-text" style="margin-bottom: 12px;">{html_mod.escape(ocr_raw)}</pre>' + grid_html
         
         raw_llm_json = pred.get("_raw_llm", "")
-        raw_llm_html = f"<div style='margin-top:10px; padding:10px; background:#0f172a; border: 1px solid #334155; border-radius:4px;'><strong style='color:#94a3b8; font-size:0.8rem;'>🤖 LLM 原始回覆 (未經規則引擎處理):</strong><pre style='margin:6px 0 0; font-size:0.75rem; color:#cbd5e1; white-space:pre-wrap; word-break: break-all;'>{html_mod.escape(raw_llm_json)}</pre></div>" if raw_llm_json else ""
+        raw_llm_retry_json = pred.get("_raw_llm_retry", "")
+        
+        raw_llm_html = ""
+        if raw_llm_json:
+            raw_llm_html += f"<div style='margin-top:10px; padding:10px; background:#0f172a; border: 1px solid #334155; border-radius:4px;'><strong style='color:#94a3b8; font-size:0.8rem;'>🤖 LLM 原始回覆 (第一次):</strong><pre style='margin:6px 0 0; font-size:0.75rem; color:#cbd5e1; white-space:pre-wrap; word-break: break-all;'>{html_mod.escape(raw_llm_json)}</pre></div>"
+        if raw_llm_retry_json:
+            raw_llm_html += f"<div style='margin-top:10px; padding:10px; background:#451a03; border: 1px solid #78350f; border-radius:4px;'><strong style='color:#fbbf24; font-size:0.8rem;'>🔄 LLM 二次重試回覆 (針對缺漏補齊):</strong><pre style='margin:6px 0 0; font-size:0.75rem; color:#fef3c7; white-space:pre-wrap; word-break: break-all;'>{html_mod.escape(raw_llm_retry_json)}</pre></div>"
         
         return f'''<div class="{card_class}">
                 <div class="beam-header">

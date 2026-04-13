@@ -92,12 +92,16 @@ def is_empty_beam(beam_dict: dict) -> bool:
                  "_debug_lines", "self_confidence", "alignment_status",
                  "spatial_anchor_rect_x_y", "span_group", "_raw_span_idx", "span_order"}
     
+    _empty_markers = {"LLM沒有東西", "LLM看不出來", ""}
+    
     for k, v in beam_dict.items():
         if k in skip_keys:
             continue
-        if isinstance(v, list) and len(v) > 0 and v != [""]:
-            return False
-        if isinstance(v, str) and v.strip():
+        if isinstance(v, list):
+            real = [x for x in v if str(x).strip() not in _empty_markers]
+            if real:
+                return False
+        elif isinstance(v, str) and v.strip() not in _empty_markers:
             return False
     
     return True

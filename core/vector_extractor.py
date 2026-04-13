@@ -417,17 +417,21 @@ class VectorExtractor:
                 continue  # bbox 本身已經含有標題結構，不往下延伸 (通過)
                 
             # Step 2: bbox 底部沒有標題 → 往下延伸搜尋
-            # 安全搜尋下限：不超過正下方最近的其他 bbox 頂部，最多往下搜 80 PDF pts
-            max_search_y = min(orig_y1 + 80, page.rect.height)
+            # 安全搜尋下限：最多往下搜 150 PDF pts，並排除 X 軸沒交集的障礙物
+            max_search_y = min(orig_y1 + 150, page.rect.height)
             for j, other_bbox in enumerate(results):
                 if j != i and other_bbox[1] > orig_y1:
-                    max_search_y = min(max_search_y, other_bbox[1])
+                    o_x0, o_x1 = other_bbox[0], other_bbox[2]
+                    overlap_x = max(0, min(orig_x1, o_x1) - max(orig_x0, o_x0))
+                    if overlap_x > (orig_x1 - orig_x0) * 0.1:  # X軸有重疊超過 10%
+                        max_search_y = min(max_search_y, other_bbox[1] + 5) # 容許些微壓線重疊，避免裁切文字
             
             if max_search_y <= orig_y1 + 3:
                 continue  # 沒有搜尋空間
                 
             # --- 策略 1: PDF 向量文字層 ---
-            search_rect = fitz.Rect(orig_x0, orig_y1, orig_x1, max_search_y)
+            # 梁標題可能會偏離梁鋼筋圖的 X 軸範圍，將 X 軸向外擴張搜尋
+            search_rect = fitz.Rect(orig_x0 - 60, orig_y1, orig_x1 + 60, max_search_y)
             below_words = page.get_text("words", clip=search_rect)
             
             title_y_max = orig_y1
@@ -440,6 +444,8 @@ class VectorExtractor:
                     found_title = True
                     title_line_y = w_y0
                     title_y_max = max(title_y_max, w_y1 + 5)
+                    bbox[0] = min(bbox[0], w[0] - 10)
+                    bbox[2] = max(bbox[2], w[2] + 10)
             
             # 找到主標題行後，順便把在同一行或稍微低一點的尺寸相關文字也包進來
             if found_title and title_line_y is not None:
@@ -447,9 +453,11 @@ class VectorExtractor:
                     w_text, w_y0, w_y1 = w[4], w[1], w[3]
                     if w_y0 - title_line_y < 12 and w_y0 >= title_line_y - 5:  # 同一行或略低
                         title_y_max = max(title_y_max, w_y1 + 5)
+                        bbox[0] = min(bbox[0], w[0] - 10)
+                        bbox[2] = max(bbox[2], w[2] + 10)
             
             # --- 策略 2: OCR Fallback ---
-            if not found_title and len(below_words) == 0:
+            if not found_title:
                 try:
                     if not hasattr(self, '_title_ocr'):
                         from rapidocr_onnxruntime import RapidOCR
@@ -474,6 +482,10 @@ class VectorExtractor:
                                         found_title = True
                                         ocr_y_bottom = max(pt[1] for pt in ocr_bbox) / 4.0
                                         title_y_max = max(title_y_max, search_rect.y0 + ocr_y_bottom + 5)
+                                        ocr_x_left = min(pt[0] for pt in ocr_bbox) / 4.0
+                                        ocr_x_right = max(pt[0] for pt in ocr_bbox) / 4.0
+                                        bbox[0] = min(bbox[0], search_rect.x0 + ocr_x_left - 10)
+                                        bbox[2] = max(bbox[2], search_rect.x0 + ocr_x_right + 10)
                 except Exception:
                     pass
             

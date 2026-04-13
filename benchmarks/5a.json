@@ -1,0 +1,397 @@
+{
+  "_comment": "由 --init 自動產生 (2026-04-14 02:24:07, 170.0s)",
+  "pdf_file": "5a.pdf",
+  "page_num": 0,
+  "expected_beam_count": 12,
+  "expected_split_count": 12,
+  "cv_params": {
+    "dilation_iterations": 2,
+    "min_area": 100000,
+    "padding_bottom": 160,
+    "hough_threshold": 95,
+    "enable_decomp": true,
+    "voting_rounds": 1
+  },
+  "beams": [
+    {
+      "beam_id": "B4F FG3a-1",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "8-#11"
+      ],
+      "top_main_bars_mid": [
+        "8-#11"
+      ],
+      "top_main_bars_right": [
+        "17-#11"
+      ],
+      "bottom_main_bars_left": [
+        "7-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "16-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "16-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "2-#5@10",
+      "stirrups_middle": "2-#5@10",
+      "stirrups_right": "2-#5@10",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "240",
+      "lap_length_bottom_left": "50",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG3a-2",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "17-#11"
+      ],
+      "top_main_bars_mid": [
+        "11-#11"
+      ],
+      "top_main_bars_right": [
+        "12-#11"
+      ],
+      "bottom_main_bars_left": [
+        "16-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "15-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "2-#5@12",
+      "stirrups_middle": "2-#5@12",
+      "stirrups_right": "2-#5@12",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "240",
+      "lap_length_top_right": "305",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG3a-3",
+      "dimensions": "140x310",
+      "top_main_bars_left": [
+        "10-#11"
+      ],
+      "top_main_bars_mid": [
+        "8-#11"
+      ],
+      "top_main_bars_right": [
+        "8-#11"
+      ],
+      "bottom_main_bars_left": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "10-#11"
+      ],
+      "bottom_main_bars_right": [
+        "14-#11"
+      ],
+      "stirrups_left": "2-#5@15",
+      "stirrups_middle": "2-#5@15",
+      "stirrups_right": "2-#5@15",
+      "face_bars": "9-#5 (E.F.)",
+      "lap_length_top_left": "305",
+      "lap_length_top_right": "",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": "305"
+    },
+    {
+      "beam_id": "B4F FG3a-4",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "9-#11"
+      ],
+      "top_main_bars_mid": [
+        "9-#11"
+      ],
+      "top_main_bars_right": [
+        "11-#11"
+      ],
+      "bottom_main_bars_left": [
+        "16-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "11-#11"
+      ],
+      "bottom_main_bars_right": [
+        "14-#11"
+      ],
+      "stirrups_left": "#5@10",
+      "stirrups_middle": "#5@10",
+      "stirrups_right": "#5@10",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "205",
+      "lap_length_bottom_left": "305",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG3a-5",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "11-#11"
+      ],
+      "top_main_bars_mid": [
+        "9-#11"
+      ],
+      "top_main_bars_right": [
+        "11-#11"
+      ],
+      "bottom_main_bars_left": [
+        "14-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "6-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11"
+      ],
+      "stirrups_left": "#5@10",
+      "stirrups_middle": "#5@10",
+      "stirrups_right": "#5@10",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "205",
+      "lap_length_top_right": "145",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG5-1",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "8-#11"
+      ],
+      "top_main_bars_mid": [
+        "11-#11"
+      ],
+      "top_main_bars_right": [
+        "11-#11"
+      ],
+      "bottom_main_bars_left": [
+        "6-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "6-#11"
+      ],
+      "bottom_main_bars_right": [
+        "4-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "2-#5@15",
+      "stirrups_middle": "2-#5@15",
+      "stirrups_right": "2-#5@15",
+      "face_bars": "8-#5 (E.F.)",
+      "lap_length_top_left": "50",
+      "lap_length_top_right": "",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": "240"
+    },
+    {
+      "beam_id": "B4F FG5-2",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "11-#11"
+      ],
+      "top_main_bars_mid": [
+        "11-#11"
+      ],
+      "top_main_bars_right": [
+        "8-#11"
+      ],
+      "bottom_main_bars_left": [
+        "4-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "11-#11"
+      ],
+      "bottom_main_bars_right": [
+        "14-#11"
+      ],
+      "stirrups_left": "#5@10",
+      "stirrups_middle": "#5@10",
+      "stirrups_right": "#5@10",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "155",
+      "lap_length_bottom_left": "240",
+      "lap_length_bottom_right": "305"
+    },
+    {
+      "beam_id": "B4F FG5-3",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "8-#11"
+      ],
+      "top_main_bars_mid": [
+        "10-#11"
+      ],
+      "top_main_bars_right": [
+        "13-#11"
+      ],
+      "bottom_main_bars_left": [
+        "14-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "11-#11"
+      ],
+      "bottom_main_bars_right": [
+        "7-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "2-#5@12",
+      "stirrups_middle": "2-#5@12",
+      "stirrups_right": "2-#5@12",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "200",
+      "lap_length_top_right": "305",
+      "lap_length_bottom_left": "305",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG5-4 (重複-1)",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "13-#11"
+      ],
+      "top_main_bars_mid": [
+        "11-#11"
+      ],
+      "top_main_bars_right": [
+        "17-#11",
+        "2-#11"
+      ],
+      "bottom_main_bars_left": [
+        "7-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "15-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "2-#5@12",
+      "stirrups_middle": "2-#5@12",
+      "stirrups_right": "2-#5@12",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "305",
+      "lap_length_top_right": "305",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG5-4 (重複-2)",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "13-#11"
+      ],
+      "top_main_bars_mid": [
+        "11-#11"
+      ],
+      "top_main_bars_right": [
+        "17-#11",
+        "2-#11"
+      ],
+      "bottom_main_bars_left": [
+        "7-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "15-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "2-#5@12",
+      "stirrups_middle": "2-#5@12",
+      "stirrups_right": "2-#5@12",
+      "face_bars": "6-#5 (E.F.)",
+      "lap_length_top_left": "305",
+      "lap_length_top_right": "305",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG5-5 (重複-1)",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "17-#11",
+        "2-#11"
+      ],
+      "top_main_bars_mid": [
+        "16-#11"
+      ],
+      "top_main_bars_right": [
+        "11-#11"
+      ],
+      "bottom_main_bars_left": [
+        "15-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "11-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "9-#5 (E.F.)",
+      "lap_length_top_left": "305",
+      "lap_length_top_right": "200",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FG5-5 (重複-2)",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "17-#11",
+        "2-#11"
+      ],
+      "top_main_bars_mid": [
+        "16-#11"
+      ],
+      "top_main_bars_right": [
+        "11-#11"
+      ],
+      "bottom_main_bars_left": [
+        "15-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "11-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "9-#5 (E.F.)",
+      "lap_length_top_left": "305",
+      "lap_length_top_right": "200",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    }
+  ]
+}

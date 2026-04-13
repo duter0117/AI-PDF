@@ -112,7 +112,7 @@ class TableExtractor:
             raw_items = []
             texts = []
             for bbox, text, conf in result:
-                if conf < 0.5 or not text.strip():
+                if conf < 0.3 or not text.strip():
                     continue
                 # bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
                 xs = [pt[0] for pt in bbox]
@@ -295,7 +295,10 @@ class TableExtractor:
             is_lap = re.match(r'^(L|La|Ld)?\s*[=≈]?\s*\d{2,4}\s*(cm|mm)?$', clean_text.strip(), re.IGNORECASE)
             is_pure_num = re.match(r'^\d{2,4}$', clean_text.strip())
             # 放寬條件：只要位置偏上方或下方，且是純數字，就給出暗示
-            if is_lap or (is_pure_num and ("上" in pos_label or "下" in pos_label)):
+            if item.get("_rebar_proximity"):
+                # 此數值疑似鋼筋部分辨識結果，不暗示為搭接長度
+                hint = " [⚠️疑似鋼筋號數殘片，請從圖面確認]"
+            elif is_lap or (is_pure_num and ("上" in pos_label or "下" in pos_label)):
                 hint = " [🌟搭接長度]"
                 
             conf = item.get("conf", 1.0)
@@ -406,9 +409,9 @@ class TableExtractor:
                 
                 # ============================================================
                 # 核心碎片判定：sub-crop 文字的中心點是否落在原始 OCR 文字的 bbox 內
-                # 使用 15px 寬容 (彌補座標還原誤差)
+                # 改用 2px 寬容，嚴格審查，避免將上下兩排緊靠的新文字 (例如 11-#11, 14-#11) 誤殺
                 # ============================================================
-                pad_check = 15
+                pad_check = 2
                 center_inside = (
                     f_box[0] - pad_check <= m_cx <= f_box[2] + pad_check and
                     f_box[1] - pad_check <= m_cy <= f_box[3] + pad_check
@@ -417,11 +420,11 @@ class TableExtractor:
                 # 備用：IoU / IoM 傳統重疊判定
                 iou, iom = compute_overlap(m_box, f_box)
                 
-                # 子字串碎片判定 (文字語義層)
-                is_substring = (len(m_text) < len(f_text) and m_text in f_text)
+                # 純物理空間重疊判定：文字內容是否為子字串等語義條件已被移除
+                # 只要高度重疊，就進入留優汰劣機制
+                is_physical_overlap = iou > 0.3 or iom > 0.5
                 
-                # 任一觸發就視為「重疊」
-                if center_inside or iou > 0.4 or iom > 0.7 or is_substring:
+                if is_physical_overlap:
                     matched = True
                     
                     # 判斷：是碎片還是更好的辨識結果？
@@ -440,13 +443,95 @@ class TableExtractor:
                         print(f"  [Sub-Crop] 取代雜訊: '{f_item['text']}'({f_item['conf']:.2f}) -> '{m_item['text']}'({m_item['conf']:.2f})")
                         final_items[f_idx] = m_item
                     else:
-                        reason = "中心點落入" if center_inside else ("子字串" if is_substring else "IoU/IoM")
+                        reason = f"IoU={iou:.2f}/IoM={iom:.2f}"
                         print(f"  [Sub-Crop] 碎片剔除({reason}): '{m_item['text']}' ∈ '{f_item['text']}'")
                     break
             
             if not matched:
                 print(f"  [Sub-Crop] 發現未見文字: '{m_item['text']}' ({m_item['conf']:.2f})")
                 final_items.append(m_item)
+        
+        # === 同源去重 (Intra-pass Dedup) ===
+        # 同一輪 OCR 可能同時檢測到 "14-#11" 和 "11"，它們的 bbox 高度重疊 (IoM ≈ 1.0)
+        # 但 cross-pass NMS 不會處理同源項目，所以需要額外的清理
+        dedup_remove = set()
+        for i in range(len(final_items)):
+            if i in dedup_remove:
+                continue
+            for j in range(i + 1, len(final_items)):
+                if j in dedup_remove:
+                    continue
+                box_i = (final_items[i]["min_x"], final_items[i]["min_y"], final_items[i]["max_x"], final_items[i]["max_y"])
+                box_j = (final_items[j]["min_x"], final_items[j]["min_y"], final_items[j]["max_x"], final_items[j]["max_y"])
+                iou, iom = compute_overlap(box_i, box_j)
+                if iom > 0.5:
+                    # 高度重疊：保留格式更好的、或文字更長的
+                    fmt_i = classify_text(final_items[i]["text"])
+                    fmt_j = classify_text(final_items[j]["text"])
+                    # 優先保留有明確格式的 (REBAR > STIRRUP > FACE_BAR > LAP_LENGTH > UNKNOWN)
+                    FORMAT_RANK = {FormatType.REBAR: 5, FormatType.STIRRUP: 4, FormatType.FACE_BAR: 3, 
+                                   FormatType.BEAM_ID: 3, FormatType.DIMENSION: 2, FormatType.LAP_LENGTH: 1, FormatType.UNKNOWN: 0}
+                    rank_i = FORMAT_RANK.get(fmt_i, 0)
+                    rank_j = FORMAT_RANK.get(fmt_j, 0)
+                    if rank_i > rank_j:
+                        dedup_remove.add(j)
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[j]['text']}' (被 '{final_items[i]['text']}' 包含, IoM={iom:.2f})")
+                    elif rank_j > rank_i:
+                        dedup_remove.add(i)
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[i]['text']}' (被 '{final_items[j]['text']}' 包含, IoM={iom:.2f})")
+                    elif len(final_items[i]["text"]) >= len(final_items[j]["text"]):
+                        dedup_remove.add(j)
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[j]['text']}' (被 '{final_items[i]['text']}' 包含, IoM={iom:.2f})")
+                    else:
+                        dedup_remove.add(i)
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[i]['text']}' (被 '{final_items[j]['text']}' 包含, IoM={iom:.2f})")
+        
+        if dedup_remove:
+            final_items = [item for idx, item in enumerate(final_items) if idx not in dedup_remove]
+        
+        # DEBUG: 針對存活的短純數字，印出它與每個 REBAR 的 bbox 和 IoM
+        for item in final_items:
+            txt = item["text"].strip()
+            if re.match(r'^\d{1,3}$', txt) and classify_text(txt) in (FormatType.LAP_LENGTH, FormatType.UNKNOWN):
+                item_box = (item["min_x"], item["min_y"], item["max_x"], item["max_y"])
+                print(f"  [DEBUG-11] 存活純數字 '{txt}' bbox={item_box}")
+                for other in final_items:
+                    if other is item: continue
+                    o_fmt = classify_text(other["text"].strip())
+                    if o_fmt == FormatType.REBAR:
+                        o_box = (other["min_x"], other["min_y"], other["max_x"], other["max_y"])
+                        d_iou, d_iom = compute_overlap(item_box, o_box)
+                        print(f"    vs REBAR '{other['text']}' bbox={o_box} → IoU={d_iou:.3f}, IoM={d_iom:.3f}")
+        
+        # === 近距離疑似殘片降信心 (Proximity Confidence Demotion) ===
+        # 如果一個短數字出現在 REBAR 密集區域且字面上是鄰近 REBAR 的子字串，
+        # 它極可能是 OCR 對某排鋼筋的部分辨識結果 (如 "14-#11" 只讀到 "11")。
+        # 不剔除 (因為它代表「這裡還有一排鋼筋」的珍貴線索)，
+        # 而是降低信心值，避免它被自動歸類為搭接長度，讓 LLM 從圖面做最終判定。
+        for i, item in enumerate(final_items):
+            txt = item["text"].strip()
+            fmt = classify_text(txt)
+            if fmt in (FormatType.LAP_LENGTH, FormatType.UNKNOWN) and re.match(r'^\d{1,3}$', txt):
+                item_cx = item["cx"]
+                item_cy = item["cy"]
+                item_h = item["max_y"] - item["min_y"]
+                
+                for j, other in enumerate(final_items):
+                    if i == j: continue
+                    other_fmt = classify_text(other["text"].strip())
+                    if other_fmt != FormatType.REBAR: continue
+                    x_overlap = other["min_x"] <= item_cx <= other["max_x"]
+                    other_h = other["max_y"] - other["min_y"]
+                    y_dist = abs(item_cy - (other["min_y"] + other["max_y"]) / 2)
+                    y_close = y_dist < max(item_h, other_h) * 2
+                    
+                    if x_overlap and y_close:
+                        other_raw = other["text"].strip().replace(" ", "")
+                        if txt in other_raw:
+                            item["conf"] = 0.3  # 強制降低信心，送 LLM 覆核
+                            item["_rebar_proximity"] = True  # 標記：疑似鋼筋殘片
+                            print(f"  [Proximity-Demote] '{txt}' 疑似鋼筋部分辨識 (靠近 '{other['text']}'), 信心降至 30%")
+                            break
                 
         ctx.ocr_items = final_items
 
@@ -577,6 +662,7 @@ class TableExtractor:
             img_h = cv_img.shape[0]
             img_w = cv_img.shape[1]
             beam_id_ys = [item["cy"] for item in beam_id_texts]
+            beam_id_xs = [item["cx"] for item in beam_id_texts]
             
             for i in range(len(candidates)):
                 for j in range(i + 1, len(candidates)):
@@ -607,11 +693,12 @@ class TableExtractor:
                     pair_center_y = (y1 + y2) / 2
                     norm_dist_center = abs((img_h / 2) - pair_center_y) / (img_h / 2)
                     
-                    # 6. 梁名距離加分 (距離越近分數越高)
+                    # 6. 梁名距離加分 (X 軸距離越近分數越高)
                     bonus_beam_id = 0
-                    if beam_id_ys:
-                        min_dist_to_id = min(abs(pair_center_y - id_y) for id_y in beam_id_ys)
-                        norm_dist_id = min_dist_to_id / img_h
+                    if beam_id_xs:
+                        pair_center_x = (x1 + w1/2 + x2 + w2/2) / 2
+                        min_dist_to_id = min(abs(pair_center_x - id_x) for id_x in beam_id_xs)
+                        norm_dist_id = min_dist_to_id / img_w
                         bonus_beam_id = max(0, 5.0 * (1 - (norm_dist_id / 0.2)))
                         
                     # 7. 移除危險的實體包夾加分 (因梁名有時會在下方當作圖例標題)
@@ -1383,14 +1470,15 @@ class TableExtractor:
                             os.makedirs("crops", exist_ok=True)
                             img.save(f"crops/crop_{index}{file_suffix}.png")
                             
-                            # === 影像增強 ===
-                            img_enhanced = self._enhance_image(img)
+                            # === 影像增強 (放入背景執行緒避免卡住 asyncio) ===
+                            img_enhanced = await asyncio.to_thread(self._enhance_image, img)
                             if retry_count == 0:
                                 enhance_completed += 1
                             
                             # === PaddleOCR 前置文字提取 ===
                             # 改為將「增強後、放大後」的圖片餵給 OCR，確保 OCR 也能看清小字！
-                            ocr_hint, ocr_items = self._run_ocr(img_enhanced)
+                            # 放進背景執行緒，確保它不會阻塞其他已發出 LLM 請求的 await 等待
+                            ocr_hint, ocr_items = await asyncio.to_thread(self._run_ocr, img_enhanced)
                             if retry_count == 0:
                                 ocr_completed += 1
                             
@@ -1484,15 +1572,12 @@ class TableExtractor:
                                 
                                 # 建構精簡 prompt — 任務分類機制 (Task-Oriented)
                                 
-                                # 找出已經有值的欄位 和 需要尋找的空欄位
-                                empty_fields = []
+                                # 找出已經有值的欄位，作為 OCR 草稿參考
                                 already_filled = []
                                 for k, v in rule_beam.items():
                                     if k in ("self_confidence", "note", "crop_index", "_ocr_text", "_crop_file"):
                                         continue
-                                    if (isinstance(v, list) and not v) or (isinstance(v, str) and not v):
-                                        empty_fields.append(k)
-                                    else:
+                                    if (isinstance(v, list) and v) or (isinstance(v, str) and v):
                                         if isinstance(v, list):
                                             already_filled.append(f"  - {k} = {v}")
                                         else:
@@ -1507,15 +1592,15 @@ class TableExtractor:
                                     task1_section += "若確定該區塊印得太模糊完全無法判讀，請輸出字串「LLM看不出來」。\n"
                                     task1_section += "【絕對禁令】若確定該區塊是干擾雜訊，或根本沒有東西，絕對不可留空字串！字串欄位必須填入「LLM沒有東西」，陣列欄位必須填入 [\"LLM沒有東西\"]！\n\n" + "\n".join(uncertain_lines) + "\n\n"
                                 
-                                task2_section = ""
-                                if empty_fields:
-                                    task2_section = "🌟 任務二：盲圖尋找 (Blind Search)\n本系統發現以下欄位目前為「空缺狀態」。請主動掃描圖片尋找遺失資訊，並盡量推測作答！\n"
-                                    task2_section += "若確定完全無法判讀，請輸出「LLM看不出來」。若確定該格子對應的方位沒有標示任何東西，請輸出「LLM沒有東西」。\n  - 待尋找欄位: " + ", ".join(empty_fields) + "\n\n"
+                                task2_section = "🌟 任務二：全面覆核與補漏 (Full Review & Fill)\n"
+                                task2_section += "既然已經啟動了進階掃描，請您「全局掃描」整張圖片，並在 JSON 中輸出**完整的所有配筋欄位**！\n"
+                                task2_section += "若本系統下方的 OCR 初步答案正確，請照抄保留；若 OCR 有錯或該對應方位沒有東西，請以您的視覺判斷為準來替換它；若是空缺的請幫忙補上。\n"
+                                task2_section += "若確定完全無法判讀，請輸出「LLM看不出來」。若確定該格子對應的方位沒有標示任何東西，請輸出「LLM沒有東西」。\n\n"
                                 
-                                # 【已確定資料】
+                                # 【OCR 草稿資料】
                                 filled_section = ""
                                 if already_filled:
-                                    filled_section = "【已確定資料】(請留空跳過)\n💡以下欄位已由前置引擎高信心填入。為了大幅提升您的處理速度與專注力，請您在輸出的 JSON 中**一律將這些欄位留空(或空陣列)**！絕對不要再次填寫！\n" + "\n".join(already_filled) + "\n\n"
+                                    filled_section = "【OCR 初步掃描結果 (供參考，請覆核並保留對的、替換錯的)】\n" + "\n".join(already_filled) + "\n\n"
                                 
                                 ocr_section = ""
                                 if ocr_hint_refreshed:
@@ -1573,39 +1658,140 @@ class TableExtractor:
                                     # 儲存原始 LLM 回答供 Benchmark 顯示
                                     rule_beam["_raw_llm"] = json.dumps(llm_beam, ensure_ascii=False)
                                     
-                                    for k, v in llm_beam.items():
-                                        if k in ("self_confidence", "note", "crop_index"):
-                                            continue
-                                        rule_val = rule_beam.get(k)
-                                        
-                                        # === 陣列欄位特殊策略 ===
+                                    def _apply_llm_result(llm_source, is_retry=False):
+                                        for k, v in llm_source.items():
+                                            if k in ("self_confidence", "note", "crop_index"):
+                                                continue
+                                            rule_val = rule_beam.get(k)
+                                            
+                                            # === 陣列欄位特殊策略 ===
+                                            if k in LIST_FIELDS:
+                                                if isinstance(v, list) and v:
+                                                    clean = [x for x in v if x != "LLM沒有東西"]
+                                                    if not clean:
+                                                        if rule_val:
+                                                            print(f"  [LLM清空/否決] {k}: {rule_val} -> (空)")
+                                                        rule_beam[k] = []
+                                                        continue  # LLM 認為完全沒東西，清空並保留空狀態
+                                                        
+                                                    # 檢查 LLM 的結果是否全部合規格
+                                                    from core.ocr_field_assigner import classify_text, FormatType
+                                                    all_valid = all(classify_text(x) == FormatType.REBAR for x in clean)
+                                                    if all_valid:
+                                                        # LLM 合規格 → 以 LLM 為主，取代規則引擎的值
+                                                        rule_beam[k] = clean
+                                                        print(f"  [LLM補位(取代)] {k} = {clean}")
+                                                    elif not (isinstance(rule_val, list) and rule_val):
+                                                        # LLM 不合規格但原本是空的 → 姑且用 LLM 的
+                                                        rule_beam[k] = clean
+                                                        print(f"  [LLM補位] {k} = {clean}")
+                                                    else:
+                                                        # LLM 不合規格且原本有值 → 保留原值
+                                                        if not is_retry:
+                                                            print(f"  [LLM略過] {k}: LLM回答不合規格 {v}，保留原值 {rule_val}")
+                                                continue
+                                            
+                                            # === 字串欄位：以 LLM 覆核結果為準 ===
+                                            # 但 beam_id 和 dimensions 若 OCR 已高信心填入，LLM 不可覆蓋
+                                            # (LLM 常把 -6 看成 -5，OCR 對精確文字辨識更可靠)
+                                            if isinstance(v, str) and v and v != "LLM沒有東西":
+                                                if k in ("beam_id", "dimensions") and isinstance(rule_val, str) and rule_val:
+                                                    if rule_val != v:
+                                                        print(f"  [LLM覆蓋被駁回] {k}: OCR='{rule_val}', LLM='{v}' → 保留 OCR")
+                                                    continue
+                                                if rule_val != v:
+                                                    print(f"  [LLM補位/更正] {k}: '{rule_val}' -> '{v}'")
+                                                rule_beam[k] = v
+                                            elif v == "LLM沒有東西" or v == "LLM看不出來":
+                                                if rule_val:
+                                                    print(f"  [LLM清空/否決] {k}: '{rule_val}' -> (空)")
+                                                rule_beam[k] = ""
+
+                                    _apply_llm_result(llm_beam)
+                                    
+                                    # === LLM 二次重試 (Iterative Refinement) ===
+                                    # 遍歷所有配筋欄位（而非僅限於 LLM 呼叫前就已空的 empty_fields）
+                                    ALL_CHECK_FIELDS = [
+                                        "beam_id", "dimensions", "face_bars",
+                                        "top_main_bars_left", "top_main_bars_mid", "top_main_bars_right",
+                                        "bottom_main_bars_left", "bottom_main_bars_mid", "bottom_main_bars_right",
+                                        "stirrups_left", "stirrups_middle", "stirrups_right",
+                                        "lap_length_top_left", "lap_length_top_right",
+                                        "lap_length_bottom_left", "lap_length_bottom_right",
+                                    ]
+                                    still_empty = []
+                                    for k in ALL_CHECK_FIELDS:
+                                        # 先檢查 LLM 的第一次回覆，若已明確宣告「LLM沒有東西」，則尊重其判定，不再二次逼問
+                                        first_ans = llm_beam.get(k)
+                                        explicitly_empty = False
                                         if k in LIST_FIELDS:
-                                            if isinstance(v, list) and v:
-                                                clean = [x for x in v if x != "LLM沒有東西"]
-                                                if not clean:
-                                                    continue  # LLM 全部回答沒有東西，保留原值
-                                                # 檢查 LLM 的結果是否全部合規格
-                                                from core.ocr_field_assigner import classify_text, FormatType
-                                                all_valid = all(classify_text(x) == FormatType.REBAR for x in clean)
-                                                if all_valid:
-                                                    # LLM 合規格 → 以 LLM 為主，取代規則引擎的值
-                                                    rule_beam[k] = clean
-                                                    print(f"  [LLM補位(取代)] {k} = {clean}")
-                                                elif not (isinstance(rule_val, list) and rule_val):
-                                                    # LLM 不合規格但原本是空的 → 姑且用 LLM 的
-                                                    rule_beam[k] = clean
-                                                    print(f"  [LLM補位] {k} = {clean}")
-                                                else:
-                                                    # LLM 不合規格且原本有值 → 保留原值
-                                                    print(f"  [LLM略過] {k}: LLM回答不合規格 {v}，保留原值 {rule_val}")
+                                            if isinstance(first_ans, list) and len(first_ans) > 0 and first_ans[0] in ("LLM沒有東西", "LLM看不出來"):
+                                                explicitly_empty = True
+                                        else:
+                                            if isinstance(first_ans, str) and first_ans in ("LLM沒有東西", "LLM看不出來"):
+                                                explicitly_empty = True
+                                                
+                                        if explicitly_empty:
                                             continue
+                                            
+                                        # 若未宣告放棄，且最終合併到 rule_beam 的結果依然是空的，則列入重試
+                                        val = rule_beam.get(k)
+                                        is_empty = False
+                                        if k in LIST_FIELDS:
+                                            if not isinstance(val, list) or not [x for x in val if x not in ("LLM沒有東西", "LLM看不出來")]:
+                                                is_empty = True
+                                        else:
+                                            if not isinstance(val, str) or not val or val in ("LLM沒有東西", "LLM看不出來"):
+                                                is_empty = True
+                                        if is_empty:
+                                            still_empty.append(k)
+                                            
+                                    MAX_RETRY_FIELDS = 12
+                                    print(f"  [DEBUG-RETRY] still_empty = {still_empty}")
+                                    print(f"  [DEBUG-RETRY] ALL_CHECK_FIELDS 檢查結果:")
+                                    for _dbg_k in ALL_CHECK_FIELDS:
+                                        _dbg_rule = rule_beam.get(_dbg_k)
+                                        _dbg_llm = llm_beam.get(_dbg_k)
+                                        _dbg_in = _dbg_k in still_empty
+                                        print(f"    {_dbg_k}: rule_beam={repr(_dbg_rule)}, llm_first={repr(_dbg_llm)}, 列入重試={_dbg_in}")
+                                    if still_empty and len(still_empty) <= MAX_RETRY_FIELDS:
+                                        print(f"  [LLM二次重試] 發現仍有缺漏 {still_empty}，發動針對性詢問...")
                                         
-                                        # === 字串欄位：規則引擎已填的絕不覆蓋 ===
-                                        if isinstance(rule_val, str) and rule_val:
-                                            continue
-                                        if isinstance(v, str) and v and v != "LLM沒有東西":
-                                            rule_beam[k] = v
-                                            print(f"  [LLM補位] {k} = '{v}'")
+                                        clean_rule_beam = {}
+                                        for key, value in rule_beam.items():
+                                            if key.startswith("_") or key in ("self_confidence", "note", "crop_index"):
+                                                continue
+                                            if key in still_empty:
+                                                clean_rule_beam[key] = ["❗請重新掃描填補❗"] if key in LIST_FIELDS else "❗請重新掃描填補❗"
+                                            else:
+                                                clean_rule_beam[key] = value
+                                                
+                                        prompt_retry = (
+                                            "這是一次覆核任務。您正在解析單跨梁配筋詳圖。\n"
+                                            "在前一次的解析中，您遺漏了以下重要欄位：\n"
+                                            f"  - 遺漏欄位: {', '.join(still_empty)}\n\n"
+                                            "請重新將注意力高度集中在圖片對應的角落與邊緣部位（例如 `_left` 務必看最左側邊界，`_right` 看最右側邊界）。\n"
+                                            "請輸出完整的 JSON。您可以直接把以下「已確定的資料」原封不動保留，但務必將標記為「❗請重新掃描填補❗」的欄位替換成您新找到的鋼筋資訊！\n"
+                                            "若您非常確定圖面上對應位置真的完全沒有標示這些資訊，請再次於該欄位填寫「LLM沒有東西」。\n\n"
+                                            "【解析規則】\n"
+                                            "1. 實體幾何定位：九宮格方位等同於欄位的結尾！(極度重要)\n"
+                                            "   - 包含「左方」(如 左上方/正左方/左下方) 的文字，必須放入帶有 `_left` 的欄位。\n"
+                                            "   - 包含「中央」或純上/下方 (如 正上方/正中央/正下方) 的文字，必須放入帶有 `_mid` 或 `_middle` 的欄位。\n"
+                                            "   - 包含「右方」(如 右上方/正右方/右下方) 的文字，必須放入帶有 `_right` 的欄位。\n"
+                                            "2. ⚠️嚴禁混淆主筋與箍筋！主筋格式為 `N-#S` (如 3-#8)，絕不含 @。箍筋格式為 `N-#S@D` (如 13-#4@15)，一定含 @。\n"
+                                            "3. 🌟 若主筋有多排（看到兩個以上的鋼筋數量標示），請務必存成陣列 (例如: [\"3-#11\", \"14-#11\"])。\n"
+                                            "4. 搭接長度：圖面上方區域的純數字是上層搭接長度，下方區域的是下層搭接長度。\n"
+                                            "5. 梁編號與尺寸：若有要求您尋找，通常位於圖面上端或下端邊緣。\n\n"
+                                            f"【已確定資料 (請保留，並填補遺失處)】:\n{json.dumps(clean_rule_beam, ensure_ascii=False, indent=2)}"
+                                        )
+                                        retry_config = genai.GenerationConfig(
+                                            response_mime_type="application/json",
+                                            response_schema=BeamList
+                                        )
+                                        llm_beams_retry = await _single_inference(img_gemini, prompt_retry, retry_config, index)
+                                        if llm_beams_retry and len(llm_beams_retry) > 0:
+                                            _apply_llm_result(llm_beams_retry[0], is_retry=True)
+                                            rule_beam["_raw_llm_retry"] = json.dumps(llm_beams_retry[0], ensure_ascii=False)
                                 else:
                                     print(f"  [錯誤] LLM 回傳為空或發生例外，強制退回純 OCR 兜底")
                                     rule_beam["_raw_llm"] = '{"error": "LLM 伺服器異常或推論失敗，已強制使用 OCR 原始數據兜底"}'
@@ -1624,6 +1810,19 @@ class TableExtractor:
                                             # 不合規格的雜訊：絕對不兜底
                                             if "fallback_suffix" in item and item["fallback_suffix"]:
                                                 print(f"  [OCR Fallback] 放棄兜底不符規格的雜訊: '{item.get('text', '')}'")
+                                                continue
+                                            
+                                            # LLM 已明確否決此欄位 (回覆「沒有東西」)：尊重 LLM 判定，不兜底
+                                            llm_first_val = llm_beam.get(pk) if llm_beam else None
+                                            llm_vetoed = False
+                                            if pk in LIST_FIELDS:
+                                                if isinstance(llm_first_val, list) and llm_first_val and llm_first_val[0] in ("LLM沒有東西", "LLM看不出來"):
+                                                    llm_vetoed = True
+                                            else:
+                                                if isinstance(llm_first_val, str) and llm_first_val in ("LLM沒有東西", "LLM看不出來"):
+                                                    llm_vetoed = True
+                                            if llm_vetoed:
+                                                print(f"  [OCR Fallback] LLM 已明確否決 {pk}，不兜底: '{item.get('text', '')}'")
                                                 continue
                                             
                                             # 陣列欄位：已有值就不追加 (信任 LLM 或規則引擎的判定)
@@ -1683,7 +1882,7 @@ class TableExtractor:
                             else:
                                 completed_children += 1
                             if progress_cb:
-                                progress_cb(f"[Phase 2] 微觀圖塊解析中... 已發送 {completed_parents}/{parent_total} 張原始圖檔，已發送 {completed_children}/{child_total} 張分割圖檔，累積辨識出 {total_beams_found} 個梁物件。")
+                                progress_cb(f"[Phase 2] 微觀圖塊解析中... 已解析完成 {completed_parents}/{parent_total} 張原始圖檔，已解析完成 {completed_children}/{child_total} 張分割圖檔，累積辨識出 {total_beams_found} 個梁物件。")
                             return None
                             
                         # 為每個跨度物件寫入 crop_index + OCR 結果
@@ -1727,7 +1926,7 @@ class TableExtractor:
                             
                         total_beams_found += len(crops_beams)
                         if progress_cb:
-                            progress_cb(f"[Phase 2] 微觀圖塊解析中... 已發送 {completed_parents}/{parent_total} 張原始圖檔，已發送 {completed_children}/{child_total} 張分割圖檔，累積辨識出 {total_beams_found} 個梁物件。")
+                            progress_cb(f"[Phase 2] 微觀圖塊解析中... 已解析完成 {completed_parents}/{parent_total} 張原始圖檔，已解析完成 {completed_children}/{child_total} 張分割圖檔，累積辨識出 {total_beams_found} 個梁物件。")
                             
                         return crops_beams
                         
@@ -1738,7 +1937,7 @@ class TableExtractor:
                         else:
                             completed_children += 1
                         if progress_cb:
-                            progress_cb(f"[Phase 2] 微觀圖塊解析中... 已發送 {completed_parents}/{parent_total} 張原始圖檔，已發送 {completed_children}/{child_total} 張分割圖檔，累積辨識出 {total_beams_found} 個梁物件。")
+                            progress_cb(f"[Phase 2] 微觀圖塊解析中... 已解析完成 {completed_parents}/{parent_total} 張原始圖檔，已解析完成 {completed_children}/{child_total} 張分割圖檔，累積辨識出 {total_beams_found} 個梁物件。")
                         return None
                             
                 print(f"[Gemini Vision] 啟用微觀視覺單圖平行推論機制，共 {len(cv_bboxes)} 張圖 (Self-Consistency x{voting_rounds})...")
