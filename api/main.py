@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import uvicorn
 import asyncio
@@ -17,6 +18,14 @@ from workflow.drawing_agent import build_graph
 from core.task_manager import tasks_db, create_task, complete_task, fail_task
 
 app = FastAPI(title="Structural Drawing AI Parser API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允許所有網域請求 (解決 Failed to fetch CORS 問題)
+    allow_credentials=True,
+    allow_methods=["*"],  # 允許所有方法 (GET, POST 等)
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def serve_ui():
