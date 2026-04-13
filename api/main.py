@@ -34,14 +34,18 @@ graph = build_graph()
 async def run_extraction_workflow(task_id: str, pdf_bytes: bytes, page_num: int, cv_params: dict = None):
     import os
     import shutil
-    # 每次任務前清空 crops 資料夾
-    crops_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "crops")
-    if os.path.exists(crops_dir):
-        shutil.rmtree(crops_dir, ignore_errors=True)
-    os.makedirs(crops_dir, exist_ok=True)
+    # 建立以 task_id 為名的專屬隔離資料夾，避免併發 (Race Condition) 互相覆蓋圖檔
+    base_crops_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "crops")
+    output_dir = os.path.join(base_crops_dir, task_id)
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir, ignore_errors=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     if cv_params is None:
         cv_params = {}
+        
+    cv_params["output_dir"] = output_dir
+    cv_params["debug_mode"] = os.getenv("DEBUG_MODE", "false").lower() == "true"
     try:
         result = await graph.ainvoke({
             "pdf_bytes": pdf_bytes,

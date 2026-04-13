@@ -188,7 +188,12 @@ class VectorExtractor:
         page = self.doc[page_num]
         
         # 放大渲染做二值化處理
-        mat = fitz.Matrix(4.0, 4.0)
+        max_dim = max(page.rect.width, page.rect.height)
+        scale_factor = 4.0
+        if max_dim * scale_factor > 8000.0:
+            scale_factor = max(2.0, 8000.0 / max_dim)
+            
+        mat = fitz.Matrix(scale_factor, scale_factor)
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
         img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
         
@@ -227,9 +232,11 @@ class VectorExtractor:
         dilated = cv2.dilate(thresh, kernel, iterations=dilation_iterations)
         
         # 儲存膨脹後的海島圖供使用者視覺除錯
-        os.makedirs("crops", exist_ok=True)
+        output_dir = cv_params.get("output_dir", "crops")
+        os.makedirs(output_dir, exist_ok=True)
         img_island = Image.fromarray(dilated)
-        img_island.save(f"crops/debug_islands_page_{page_num}.png")
+        if cv_params.get("debug_mode", False):
+            img_island.save(os.path.join(output_dir, f"debug_islands_page_{page_num}.png"))
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -247,26 +254,26 @@ class VectorExtractor:
             # 過濾掉雜訊、單獨文字體，以及超級大的頁框
             if area > min_area and area < (pix.width * pix.height * 0.25):
                 # 退回給 PDF 的原始單位坐標 (除以 4.0)
-                orig_x0 = max(0, (x - 40) / 4.0)
-                orig_y0 = max(0, (y - 40) / 4.0)
-                orig_x1 = min(page.rect.width, (x + w + 40) / 4.0)
-                orig_y1 = min(page.rect.height, (y + h + padding_bottom) / 4.0)
+                orig_x0 = max(0, (x - 40) / scale_factor)
+                orig_y0 = max(0, (y - 40) / scale_factor)
+                orig_x1 = min(page.rect.width, (x + w + 40) / scale_factor)
+                orig_y1 = min(page.rect.height, (y + h + padding_bottom) / scale_factor)
                 pre_nms_results.append([orig_x0, orig_y0, orig_x1, orig_y1])
             else:
                 noise_dropped += 1
                 # 若面積過大 (> 25%)，很可能是誤判為整張大圖框而被丟棄者，必須存檔供檢閱
                 if area >= (pix.width * pix.height * 0.25):
-                    orig_x0 = max(0, (x - 10) / 4.0)
-                    orig_y0 = max(0, (y - 10) / 4.0)
-                    orig_x1 = min(page.rect.width, (x + w + 10) / 4.0)
-                    orig_y1 = min(page.rect.height, (y + h + 10) / 4.0)
+                    orig_x0 = max(0, (x - 10) / scale_factor)
+                    orig_y0 = max(0, (y - 10) / scale_factor)
+                    orig_x1 = min(page.rect.width, (x + w + 10) / scale_factor)
+                    orig_y1 = min(page.rect.height, (y + h + 10) / scale_factor)
                     dropped_for_save.append(("oversize", [orig_x0, orig_y0, orig_x1, orig_y1]))
                 # 對於面積實在太小(例如只有單獨文字、碎點，面積 < 4000)者直接放生不存檔，否則會跑出幾千張圖拖垮系統
                 elif area > 4000:
-                    orig_x0 = max(0, (x - 10) / 4.0)
-                    orig_y0 = max(0, (y - 10) / 4.0)
-                    orig_x1 = min(page.rect.width, (x + w + 10) / 4.0)
-                    orig_y1 = min(page.rect.height, (y + h + 10) / 4.0)
+                    orig_x0 = max(0, (x - 10) / scale_factor)
+                    orig_y0 = max(0, (y - 10) / scale_factor)
+                    orig_x1 = min(page.rect.width, (x + w + 10) / scale_factor)
+                    orig_y1 = min(page.rect.height, (y + h + 10) / scale_factor)
                     dropped_for_save.append(("noise", [orig_x0, orig_y0, orig_x1, orig_y1]))
         
         pre_nms_len = len(pre_nms_results)
@@ -287,8 +294,8 @@ class VectorExtractor:
         refined_results = []
         for bbox in results:
             orig_x0, orig_y0, orig_x1, orig_y1 = bbox
-            px0, py0 = int(orig_x0 * 4.0), int(orig_y0 * 4.0)
-            px1, py1 = int(orig_x1 * 4.0), int(orig_y1 * 4.0)
+            px0, py0 = int(orig_x0 * scale_factor), int(orig_y0 * scale_factor)
+            px1, py1 = int(orig_x1 * scale_factor), int(orig_y1 * scale_factor)
             
             sub_thresh = thresh[py0:py1, px0:px1]
             if sub_thresh.shape[0] < 20 or sub_thresh.shape[1] < 20:
@@ -370,7 +377,7 @@ class VectorExtractor:
             # =======================================================================
             
             # 反算回原始座標
-            new_orig_y1 = orig_y0 + (cutoff_py1 / 4.0)
+            new_orig_y1 = orig_y0 + (cutoff_py1 / scale_factor)
             bbox[3] = min(orig_y1, new_orig_y1)
             refined_results.append(bbox)
             
@@ -464,7 +471,7 @@ class VectorExtractor:
                         self._title_ocr = RapidOCR()
                     
                     if self._title_ocr:
-                        search_pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=search_rect)
+                        search_pix = page.get_pixmap(matrix=fitz.Matrix(scale_factor, scale_factor), clip=search_rect)
                         if search_pix.height > 5 and search_pix.width > 5:
                             channels = search_pix.n
                             search_img = np.frombuffer(search_pix.samples, dtype=np.uint8).reshape(
@@ -480,10 +487,10 @@ class VectorExtractor:
                                 for ocr_bbox, ocr_text, ocr_conf in ocr_result:
                                     if ocr_conf > 0.5 and is_title_candidate(ocr_text):
                                         found_title = True
-                                        ocr_y_bottom = max(pt[1] for pt in ocr_bbox) / 4.0
+                                        ocr_y_bottom = max(pt[1] for pt in ocr_bbox) / scale_factor
                                         title_y_max = max(title_y_max, search_rect.y0 + ocr_y_bottom + 5)
-                                        ocr_x_left = min(pt[0] for pt in ocr_bbox) / 4.0
-                                        ocr_x_right = max(pt[0] for pt in ocr_bbox) / 4.0
+                                        ocr_x_left = min(pt[0] for pt in ocr_bbox) / scale_factor
+                                        ocr_x_right = max(pt[0] for pt in ocr_bbox) / scale_factor
                                         bbox[0] = min(bbox[0], search_rect.x0 + ocr_x_left - 10)
                                         bbox[2] = max(bbox[2], search_rect.x0 + ocr_x_right + 10)
                 except Exception:
@@ -494,7 +501,7 @@ class VectorExtractor:
                 title_reclaim_count += 1
         
         if title_reclaim_count > 0:
-            print(f"[Phase 3.6] 標題歸屬回收: {title_reclaim_count} 個 bbox 已擴展以包含梁編號")
+            pass # print(f"[Phase 3.6] 標題歸屬回收: {title_reclaim_count} 個 bbox 已擴展以包含梁編號")
         # ==============================================================
         
         
@@ -506,9 +513,12 @@ class VectorExtractor:
         enable_decomp = cv_params.get('enable_decomp', True)
         
         if enable_decomp:
-            os.makedirs("crops/rough_cut_pass1", exist_ok=True)
-            with open("crops/rough_cut_pass1/titles_log.txt", "w", encoding="utf-8") as _f:
-                _f.write("=== 初切標題與字體大小紀錄 ===\n\n")
+            rough_cut_dir = os.path.join(output_dir, "rough_cut_pass1")
+            if cv_params.get("debug_mode", False):
+                os.makedirs(rough_cut_dir, exist_ok=True)
+            if cv_params.get("debug_mode", False):
+                with open(os.path.join(rough_cut_dir, "titles_log.txt"), "w", encoding="utf-8") as _f:
+                    _f.write_f.write("=== 初切標題與字體大小紀錄 ===\n\n")
 
             # --- Two-Pass Architecture: Pass 1 (收集) ---
             all_potential_titles = []
@@ -517,8 +527,8 @@ class VectorExtractor:
                 
             for p_idx, bbox in enumerate(results):
                 orig_x0, orig_y0, orig_x1, orig_y1 = bbox
-                px0, py0 = int(orig_x0 * 4.0), int(orig_y0 * 4.0)
-                px1, py1 = int(orig_x1 * 4.0), int(orig_y1 * 4.0)
+                px0, py0 = int(orig_x0 * scale_factor), int(orig_y0 * scale_factor)
+                px1, py1 = int(orig_x1 * scale_factor), int(orig_y1 * scale_factor)
                 
                 search_rect = fitz.Rect(orig_x0, orig_y0, orig_x1, orig_y1)
                 
@@ -529,7 +539,7 @@ class VectorExtractor:
                         from rapidocr_onnxruntime import RapidOCR
                         self._title_ocr = RapidOCR()
                     
-                    search_pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=search_rect)
+                    search_pix = page.get_pixmap(matrix=fitz.Matrix(scale_factor, scale_factor), clip=search_rect)
                     channels = search_pix.n
                     search_img = np.frombuffer(search_pix.samples, dtype=np.uint8).reshape(
                         search_pix.height, search_pix.width, channels
@@ -643,7 +653,7 @@ class VectorExtractor:
                 # === Phase 3.7 自檢 規則 1: 無合法標題 → 刪除 ===
                 if len(filtered_titles) == 0:
                     phase37_deleted += 1
-                    print(f"[Phase 3.7] 刪除無標題母塊 {p_idx} (y0={orig_y0:.1f})")
+                    pass # print(f"[Phase 3.7] 刪除無標題母塊 {p_idx} (y0={orig_y0:.1f})")
                     original_parents.append([orig_x0, orig_y0, orig_x1, orig_y1])
                     trimmed_parent_logs.append({"idx": len(original_parents) - 1, "titles": []})
                     continue
@@ -661,18 +671,18 @@ class VectorExtractor:
                 if len(y_groups) >= 2:
                     # 垂直分割：從上排最低標題的 bottom_y + 20px(≈5pt) 切一刀
                     phase37_split += 1
-                    print(f"[Phase 3.7] 母塊 {p_idx} 垂直分割: {len(y_groups)} 排, 標題: {[t['text'] for t in filtered_titles]}")
+                    pass # print(f"[Phase 3.7] 母塊 {p_idx} 垂直分割: {len(y_groups)} 排, 標題: {[t['text'] for t in filtered_titles]}")
                     
                     prev_pdf_y = orig_y0
                     for g_idx, group in enumerate(y_groups):
                         lowest_bottom = max(t["bottom_y"] for t in group)
                         
                         # 截斷尾巴：每個子塊的底邊緊貼其所屬那排的最低標題
-                        sub_y1 = (py0 + lowest_bottom + 5) / 4.0
+                        sub_y1 = (py0 + lowest_bottom + 5) / scale_factor
                         sub_y1 = min(orig_y1, sub_y1)
                         
                         if g_idx < len(y_groups) - 1:
-                            cut_pdf_y = (py0 + lowest_bottom + 20) / 4.0  # 5pt below
+                            cut_pdf_y = (py0 + lowest_bottom + 20) / scale_factor  # 5pt below
                             # 上半部
                             sub_bbox = [orig_x0, prev_pdf_y, orig_x1, sub_y1]
                             original_parents.append(sub_bbox)
@@ -690,8 +700,8 @@ class VectorExtractor:
                                 for i in range(len(span_edges) - 1):
                                     child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
                                     child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
-                                    child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
-                                    child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
+                                    child_orig_x0 = orig_x0 + ((child_px0 - px0) / scale_factor)
+                                    child_orig_x1 = orig_x0 + ((child_px1 - px0) / scale_factor)
                                     final_single_spans.append([child_orig_x0, prev_pdf_y, child_orig_x1, sub_y1])
                                     child_to_parent_map[len(final_single_spans) - 1] = p_idx
                             else:
@@ -715,8 +725,8 @@ class VectorExtractor:
                                 for i in range(len(span_edges) - 1):
                                     child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
                                     child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
-                                    child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
-                                    child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
+                                    child_orig_x0 = orig_x0 + ((child_px0 - px0) / scale_factor)
+                                    child_orig_x1 = orig_x0 + ((child_px1 - px0) / scale_factor)
                                     final_single_spans.append([child_orig_x0, prev_pdf_y, child_orig_x1, orig_y1])
                                     child_to_parent_map[len(final_single_spans) - 1] = p_idx
                             else:
@@ -728,8 +738,8 @@ class VectorExtractor:
                 if len(filtered_titles) >= 1:
                     # [動態截斷尾巴]
                     lowest_y_px = max(t["bottom_y"] for t in filtered_titles)
-                    # lowest_y_px 位於 search_img 內，該圖片最上緣對應的 PDF 坐標是 py0 / 4.0
-                    new_orig_y1 = (py0 + lowest_y_px + 5) / 4.0
+                    # lowest_y_px 位於 search_img 內，該圖片最上緣對應的 PDF 坐標是 py0 / scale_factor
+                    new_orig_y1 = (py0 + lowest_y_px + 5) / scale_factor
                     orig_y1 = min(orig_y1, new_orig_y1)
                     
                 original_parents.append([orig_x0, orig_y0, orig_x1, orig_y1])
@@ -742,21 +752,22 @@ class VectorExtractor:
                     was_split = True
                     dominant_group = filtered_titles
                     dominant_group.sort(key=lambda t: t["cx"])
-                    print(f"[Phase 3.8] 母塊 {p_idx} 共保留 {len(dominant_group)} 組真實梁標題: {[t['text'] for t in dominant_group]}")
+                    pass # print(f"[Phase 3.8] 母塊 {p_idx} 共保留 {len(dominant_group)} 組真實梁標題: {[t['text'] for t in dominant_group]}")
                     
-                    with open("crops/rough_cut_pass1/titles_log.txt", "a", encoding="utf-8") as _f:
-                        _f.write(f"▼ 母塊 {p_idx} (包圍盒: [x0={orig_x0:.1f}, y0={orig_y0:.1f}, x1={orig_x1:.1f}, y1={orig_y1:.1f}])\n")
-                        _f.write(f"  原始 OCR 單詞數量: {len(raw_titles)}\n")
-                        for idx, rt in enumerate(raw_titles):
-                            _f.write(f"    [Raw {idx}] {rt['text']} (cx={rt['cx']:.1f}, cy={rt['cy']:.1f}, w={rt['w']:.1f}, h={rt['h']:.1f})\n")
-                        _f.write(f"  總計偵測並採納 {len(dominant_group)} 個標題:\n")
-                        for pt in item["potential_titles"]:
-                            status = "✅採用" if pt["id"] in valid_ids_set else "❌LLM雜訊剔除"
-                            if status == "✅採用":
-                                _f.write(f"    [{status}] 文字: {pt['text']:<20} | cx={pt['cx']:.1f}, cy={pt['cy']:.1f} | 寬度: {pt['w']:>4.1f}px | 高度: {pt['h']:>4.1f}px\n")
-                            else:
-                                _f.write(f"    [{status}] 文字: {pt['text']:<20}\n")
-                        _f.write("\n")
+                    if cv_params.get("debug_mode", False):
+                        with open(os.path.join(rough_cut_dir, "titles_log.txt"), "a", encoding="utf-8") as _f:
+                            _f.write(f"▼ 母塊 {p_idx} (包圍盒: [x0={orig_x0:.1f}, y0={orig_y0:.1f}, x1={orig_x1:.1f}, y1={orig_y1:.1f}])\n")
+                            _f.write(f"  原始 OCR 單詞數量: {len(raw_titles)}\n")
+                            for idx, rt in enumerate(raw_titles):
+                                _f.write(f"    [Raw {idx}] {rt['text']} (cx={rt['cx']:.1f}, cy={rt['cy']:.1f}, w={rt['w']:.1f}, h={rt['h']:.1f})\n")
+                            _f.write(f"  總計偵測並採納 {len(dominant_group)} 個標題:\n")
+                            for pt in item["potential_titles"]:
+                                status = "✅採用" if pt["id"] in valid_ids_set else "❌LLM雜訊剔除"
+                                if status == "✅採用":
+                                    _f.write(f"    [{status}] 文字: {pt['text']:<20} | cx={pt['cx']:.1f}, cy={pt['cy']:.1f} | 寬度: {pt['w']:>4.1f}px | 高度: {pt['h']:>4.1f}px\n")
+                                else:
+                                    _f.write(f"    [{status}] 文字: {pt['text']:<20}\n")
+                            _f.write("\n")
                     
                     split_points_x = []
                     for i in range(len(dominant_group) - 1):
@@ -770,8 +781,8 @@ class VectorExtractor:
                         child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
                         child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
                         
-                        child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
-                        child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
+                        child_orig_x0 = orig_x0 + ((child_px0 - px0) / scale_factor)
+                        child_orig_x1 = orig_x0 + ((child_px1 - px0) / scale_factor)
                         
                         final_single_spans.append([child_orig_x0, orig_y0, child_orig_x1, orig_y1])
                         child_to_parent_map[len(final_single_spans) - 1] = p_idx
@@ -781,17 +792,18 @@ class VectorExtractor:
                     final_single_spans.append([orig_x0, orig_y0, orig_x1, orig_y1])
                             
             if phase37_deleted > 0 or phase37_split > 0:
-                print(f"[Phase 3.7] Y軸自檢: 刪除 {phase37_deleted} 無標題塊, 垂直分割 {phase37_split} 多排塊")
+                pass # print(f"[Phase 3.7] Y軸自檢: 刪除 {phase37_deleted} 無標題塊, 垂直分割 {phase37_split} 多排塊")
             print(f"[Phase 3.8] 原有 {len(original_parents)} 母塊。套用單跨裁切後，共準備送出 {len(final_single_spans)} 個最終獨立測資。")
             results = final_single_spans
         # ==============================================================
         # 執行除錯裁切並儲存
         if dropped_for_save or final_single_spans or original_parents:
             
-            drop_dir = "crops/drop"
-            trimmed_dir = "crops/trimmed_parents"
-            os.makedirs(drop_dir, exist_ok=True)
-            os.makedirs(trimmed_dir, exist_ok=True)
+            drop_dir = os.path.join(output_dir, "drop")
+            trimmed_dir = os.path.join(output_dir, "trimmed_parents")
+            if cv_params.get("debug_mode", False):
+                os.makedirs(drop_dir, exist_ok=True)
+                os.makedirs(trimmed_dir, exist_ok=True)
             mat_save = fitz.Matrix(2.0, 2.0)
             
             for idx, (reason, rect_coords) in enumerate(dropped_for_save):
