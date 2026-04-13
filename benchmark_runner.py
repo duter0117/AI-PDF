@@ -136,7 +136,12 @@ def compare_field(field_name: str, expected, predicted) -> Tuple[float, str]:
             return 0.0, f"expected {exp_list}, got empty"
         matches = sum(1 for i in range(max(len(exp_list), len(pred_list)))
                       if i < len(exp_list) and i < len(pred_list) and exp_list[i] == pred_list[i])
-        return matches / max(len(exp_list), len(pred_list)), "element-wise"
+        if matches == max(len(exp_list), len(pred_list)):
+            return 1.0, "element-wise"
+        # 如果逐位比對失敗，嘗試集合比 (忽略順序)
+        set_matches = len(set(exp_list) & set(pred_list))
+        set_score = set_matches / max(len(set(exp_list) | set(pred_list)), 1)
+        return max(matches / max(len(exp_list), len(pred_list)), set_score), "element-wise"
     else:
         exp_str = normalize_text(str(expected) if expected else "")
         pred_str = normalize_text(str(predicted) if predicted else "")

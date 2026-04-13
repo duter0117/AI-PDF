@@ -192,6 +192,18 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
     assignments = []  # 用於 debug log
     borderline_records = [] # 暫存 90% ~ 95% 的邊緣信心項目
     
+    # ==== Pre-scan: 找出有低信心項目的方位，同方位的高信心項目也要送 LLM ====
+    # 如果同一個九宮格方位中有任何項目信心<95%，代表那個位置的圖面有不確定性
+    # 此時即使該方位有其他 96%+ 的項目，也不應自動填入，而是全部送 LLM 看完整圖面後判斷
+    contested_positions = set()
+    for item in ocr_items:
+        pos = _extract_core_position(item.get("pos_label", ""))
+        conf = item.get("conf", 0.0)
+        if conf < HIGH_CONF_THRESHOLD:
+            contested_positions.add(pos)
+    if contested_positions:
+        print(f"  [Pre-scan] 以下方位存在低信心項目，將全數送 LLM: {contested_positions}")
+    
     for item in ocr_items:
         text = item["text"].strip()
         conf = item.get("conf", 0.0)
@@ -256,7 +268,6 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
         
         if fmt == FormatType.FACE_BAR:
             normalized = normalize_text(text)
-            # 腰筋 (E.F.) 文字特徵極端明顯，發生誤判為其他鋼筋的機率近乎零，大幅放寬門檻 (85% 直填，80% 邊緣)
             if conf >= 0.85:
                 beam["face_bars"] = normalized
                 assignments.append(f"✅ face_bars = '{normalized}' (conf={conf:.0%})")
@@ -269,7 +280,6 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
             continue
         
         if fmt == FormatType.LAP_LENGTH:
-            # 搭接長度只有在上下方才有意義，若在正中央/正左/正右 → 可能不是搭接長度
             if "上" not in core_pos and "下" not in core_pos:
                 default_field = POS_TO_DEFAULT_FIELD.get(core_pos)
                 if default_field:
@@ -281,9 +291,13 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
         
         # Step 4: 通用映射
         if field_key:
-            if conf >= 0.95:
+            # 如果這個方位被標記為「有爭議」，則無視信心度，全部送 LLM
+            if core_pos in contested_positions and field_key in LIST_FIELDS:
+                item["predicted_field"] = field_key
+                low_conf_items.append(item)
+                assignments.append(f"⚠️ {field_key} 同方位有低信心項目，全部送 LLM: '{text}' (conf={conf:.0%})")
+            elif conf >= 0.95:
                 if field_key in LIST_FIELDS:
-                    # 若文字包含逗號(例如先前合併的多排鋼筋)，拆分後加入
                     for part in text.split(","):
                         beam[field_key].append(part.strip())
                     assignments.append(f"✅ {field_key} += '{text}' (conf={conf:.0%})")

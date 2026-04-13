@@ -396,31 +396,52 @@ class TableExtractor:
         from core.ocr_field_assigner import classify_text, FormatType
         for m_item in multi_items:
             m_box = (m_item["min_x"], m_item["min_y"], m_item["max_x"], m_item["max_y"])
+            m_cx, m_cy = m_item["cx"], m_item["cy"]
+            m_text = m_item["text"].strip().replace(" ", "")
+            
             matched = False
             for f_idx, f_item in enumerate(final_items):
                 f_box = (f_item["min_x"], f_item["min_y"], f_item["max_x"], f_item["max_y"])
+                f_text = f_item["text"].strip().replace(" ", "").replace(",", "")
+                
+                # ============================================================
+                # 核心碎片判定：sub-crop 文字的中心點是否落在原始 OCR 文字的 bbox 內
+                # 使用 15px 寬容 (彌補座標還原誤差)
+                # ============================================================
+                pad_check = 15
+                center_inside = (
+                    f_box[0] - pad_check <= m_cx <= f_box[2] + pad_check and
+                    f_box[1] - pad_check <= m_cy <= f_box[3] + pad_check
+                )
+                
+                # 備用：IoU / IoM 傳統重疊判定
                 iou, iom = compute_overlap(m_box, f_box)
                 
-                # 如果 IoU > 0.4 或 小框被大框包住 70% 以上 (IoM>0.7)
-                # 附加保險判斷：如果小圖字串的中心點 (cx, cy) 落在任何大圖字串的範圍內，直接視為碎片殘留
-                m_cx, m_cy = m_item["cx"], m_item["cy"]
-                is_inside = (f_box[0] - 5 <= m_cx <= f_box[2] + 5) and (f_box[1] - 5 <= m_cy <= f_box[3] + 5)
+                # 子字串碎片判定 (文字語義層)
+                is_substring = (len(m_text) < len(f_text) and m_text in f_text)
                 
-                if iou > 0.4 or iom > 0.7 or is_inside:
+                # 任一觸發就視為「重疊」
+                if center_inside or iou > 0.4 or iom > 0.7 or is_substring:
                     matched = True
+                    
+                    # 判斷：是碎片還是更好的辨識結果？
+                    # 碎片 = 文字比原始短，或格式更差 → 直接丟棄
+                    # 更正 = 文字合規且原始不合規，或同格式但信心大勝 → 取代
                     fmt_f = classify_text(f_item["text"])
                     fmt_m = classify_text(m_item["text"])
                     
-                    # 取代條件：小圖讀出合法格式且大圖為 UNKNOWN，或是兩者同格式但小圖信心大勝
                     should_replace = False
                     if fmt_m != FormatType.UNKNOWN and fmt_f == FormatType.UNKNOWN:
                         should_replace = True
                     elif fmt_m == fmt_f and m_item["conf"] > f_item["conf"] + 0.1:
                         should_replace = True
-                        
+                    
                     if should_replace:
                         print(f"  [Sub-Crop] 取代雜訊: '{f_item['text']}'({f_item['conf']:.2f}) -> '{m_item['text']}'({m_item['conf']:.2f})")
                         final_items[f_idx] = m_item
+                    else:
+                        reason = "中心點落入" if center_inside else ("子字串" if is_substring else "IoU/IoM")
+                        print(f"  [Sub-Crop] 碎片剔除({reason}): '{m_item['text']}' ∈ '{f_item['text']}'")
                     break
             
             if not matched:
