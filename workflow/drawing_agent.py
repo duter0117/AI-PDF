@@ -138,6 +138,7 @@ async def llm_reasoning_node(state: GraphState):
     try:
         gemini_data = json.loads(state["table_markdown"])
         raw_beams = gemini_data.get("beams", [])
+        api_metrics = gemini_data.get("metrics", {})
 
         from core.post_processor import apply_structural_rules, is_empty_beam
         
@@ -334,6 +335,7 @@ async def llm_reasoning_node(state: GraphState):
         "aligned_beams": aligned_entities,
         "raw_json_string": state["table_markdown"],
         "confidence_scores": scores,
+        "api_metrics": api_metrics,
         "extracted_summary": {
             "total_beams_found": beam_count,
             "total_vectors_in_page": state["vector_data"].get("vector_count", 0)

@@ -257,9 +257,9 @@
         "12-#11",
         "14-#11"
       ],
-      "stirrups_left": "3#5@10",
-      "stirrups_middle": "3#5@10",
-      "stirrups_right": "3#5@10",
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
       "face_bars": "8-#6 (E.F.)",
       "lap_length_top_left": "275",
       "lap_length_top_right": "155",

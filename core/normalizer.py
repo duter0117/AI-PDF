@@ -3,6 +3,8 @@ import re
 def normalize_text(s: str) -> str:
     if not s or not isinstance(s, str):
         return ""
+    if s in ("LLM沒有東西", "LLM看不出來"):
+        return ""
     s = s.strip()
     s = s.replace("（", "(").replace("）", ")").replace("×", "x").replace("Ｘ", "x").replace("X", "x")
     s = re.sub(r'\s+', ' ', s)
@@ -25,8 +27,15 @@ def normalize_text(s: str) -> str:
     # 3. 處理腰筋標註標準化 (確保 E.F. 前有空白並統一格式)
     s = re.sub(r'\(\s*[Ee]\.?[Ff]\.?\s*\)', '(E.F.)', s)
     s = re.sub(r'([^\s])\(E\.F\.\)', r'\1 (E.F.)', s)
+    s = re.sub(r'_\s*\(E\.F\.\)', ' (E.F.)', s)  # 修復 OCR 誤判底線
     
-    # 4. 直接替換同義詞的字典
+    # 4. 修復鋼筋數量與號數之間漏掉的減號 (例如 6#11 → 6-#11)
+    s = re.sub(r'(?<![-])(\d+)\s*(#\d+)', r'\1-\2', s)
+    
+    # 5. 去除程式內部產生的重名標籤 (如: (重複-2))
+    s = re.sub(r'\s*\(重複-\d+\)\s*$', '', s)
+    
+    # 5. 直接替換同義詞的字典
     synonyms = {
         "e.f": "E.F.",
         "ef": "E.F.",
@@ -42,7 +51,22 @@ def normalize_text(s: str) -> str:
 def normalize_list(lst) -> list:
     if not lst or not isinstance(lst, list):
         return []
-    return [normalize_text(str(x)) for x in lst if x]
+    result = [normalize_text(str(x)) for x in lst if x]
+    # 去除空字串
+    result = [x for x in result if x]
+    # 去重 (保留順序)
+    seen = set()
+    deduped = []
+    for x in result:
+        if x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    # 鋼筋排序：數量多的排前面 (如 14-#11 排在 3-#11 前面)
+    def rebar_sort_key(s):
+        m = re.match(r'^(\d+)-#', s)
+        return -int(m.group(1)) if m else 0
+    deduped.sort(key=rebar_sort_key)
+    return deduped
 
 def normalize_dict(d: dict) -> dict:
     if not d or not isinstance(d, dict):

@@ -208,16 +208,17 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
 
     final = result.get("final_output", {})
     aligned = final.get("aligned_beams", [])
+    api_metrics = final.get("api_metrics", {})
     for b in aligned: b["_source"] = "split"
     from core.post_processor import apply_structural_rules
     expected_beams = [apply_structural_rules(b) for b in ground_truth.get("beams", [])]
 
     # === 建立 expected beam 的 ID 查詢表 ===
-    exp_by_id = {}
+    exp_by_ids = defaultdict(list)
     for exp in expected_beams:
         eid = normalize_text(exp.get("beam_id", ""))
         if eid:
-            exp_by_id[eid] = exp
+            exp_by_ids[eid].append(exp)
 
     # === 統一合併配對 (不區分母子了) ===
     # 為避免漏抓，我們使用模糊配對機制
@@ -230,17 +231,24 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
         pred_id = normalize_text(pred.get("beam_id", ""))
         matched_exp = None
         
-        if pred_id and pred_id in exp_by_id and exp_by_id[pred_id] in unmatched_exp:
-            matched_exp = exp_by_id[pred_id]
+        if pred_id and pred_id in exp_by_ids:
+            for exp in exp_by_ids[pred_id]:
+                if exp in unmatched_exp:
+                    matched_exp = exp
+                    break
             
         # 如果精確比對失敗，且有值，嘗試模糊比對
         if not matched_exp and pred_id:
-            for eid, exp in exp_by_id.items():
-                if exp in unmatched_exp and (pred_id in eid or eid in pred_id):
+            for eid, exps in exp_by_ids.items():
+                if (pred_id in eid or eid in pred_id):
                     ratio = min(len(pred_id), len(eid)) / max(len(pred_id), len(eid))
                     if ratio > 0.4:
-                        matched_exp = exp
-                        break
+                        for exp in exps:
+                            if exp in unmatched_exp:
+                                matched_exp = exp
+                                break
+                if matched_exp:
+                    break
                         
         if matched_exp:
             aligned_pairs.append((matched_exp, pred))
@@ -407,6 +415,7 @@ async def evaluate_single(pdf_path, ground_truth, graph) -> dict:
         "metrics_breakdown": m_breakdown,
         "beam_details": beam_results,
         "cv_params": ground_truth.get("cv_params", {}),
+        "api_metrics": api_metrics,
     }
 
 # ================================================================
@@ -464,6 +473,10 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
     avg_prec = round(sum(r["precision"] for r in reports) / total_pdfs, 1) if total_pdfs else 0
     avg_rec = round(sum(r["recall"] for r in reports) / total_pdfs, 1) if total_pdfs else 0
     avg_f1 = round(sum(r["f1"] for r in reports) / total_pdfs, 1) if total_pdfs else 0
+    
+    total_llm_calls = sum(r.get("api_metrics", {}).get("llm_calls", 0) for r in reports)
+    total_prompt_tokens = sum(r.get("api_metrics", {}).get("prompt_tokens", 0) for r in reports)
+    total_candidates_tokens = sum(r.get("api_metrics", {}).get("candidates_tokens", 0) for r in reports)
 
     # Helper: render a single beam card
     def _render_beam_card(b, idx, zebra_idx):
@@ -550,6 +563,9 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
             grid_html += '</div>'
             ocr_content_html = f'<pre class="ocr-text" style="margin-bottom: 12px;">{html_mod.escape(ocr_raw)}</pre>' + grid_html
         
+        raw_llm_json = pred.get("_raw_llm", "")
+        raw_llm_html = f"<div style='margin-top:10px; padding:10px; background:#0f172a; border: 1px solid #334155; border-radius:4px;'><strong style='color:#94a3b8; font-size:0.8rem;'>🤖 LLM 原始回覆 (未經規則引擎處理):</strong><pre style='margin:6px 0 0; font-size:0.75rem; color:#cbd5e1; white-space:pre-wrap; word-break: break-all;'>{html_mod.escape(raw_llm_json)}</pre></div>" if raw_llm_json else ""
+        
         return f'''<div class="{card_class}">
                 <div class="beam-header">
                     <span class="beam-idx">#{idx+1}</span>
@@ -574,6 +590,7 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
                 <details class="ocr-panel">
                     <summary>🔍 OCR 預掃結果 — {html_mod.escape(str(pred.get("_crop_file", "")))}</summary>
                     {ocr_content_html}
+                    {raw_llm_html}
                 </details>
             <div class="section-divider"><span>上層主筋 TOP BARS</span></div>
             <div class="beam-grid row-3">
@@ -869,6 +886,10 @@ h3{{font-size:1rem;font-weight:600;color:#94a3b8;margin:20px 0 12px}}
     <div class="summary-card">
         <div class="label">F1</div>
         <div class="value">{avg_f1}%</div>
+    </div>
+    <div class="summary-card" style="background: linear-gradient(135deg, #1e3a8a, #111827);">
+        <div class="label" style="color: #60a5fa;">LLM Token 消耗 (輸入+輸出)</div>
+        <div class="value" style="font-size: 1.2rem;">{total_prompt_tokens + total_candidates_tokens:,} <span style="font-size: 0.7rem; color: #94a3b8;">({total_llm_calls} API Calls)</span></div>
     </div>
 </div>
 

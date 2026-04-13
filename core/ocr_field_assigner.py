@@ -23,12 +23,12 @@ class FormatType(Enum):
     UNKNOWN = "unknown"       # 無法辨識
 
 
-# 主筋: N-#S 格式，不含 @
-RE_REBAR = re.compile(r'^\d+-#\d+$')
-# 箍筋: 含 @ (如 13-#4@15, #4@20, 1-#4@10)
-RE_STIRRUP = re.compile(r'^(\d+-)?#\d+@\d+$')
+# 主筋: N-#S 格式，不含 @，只接受 #3 發展至 #18，支援逗號組合
+RE_REBAR = re.compile(r'^\d+-#(?:[3-9]|1[0-8])(?:\s*,\s*\d+-#(?:[3-9]|1[0-8]))*$')
+# 箍筋: 含 @ (如 13-#4@15, #4@20)，鋼筋號數限 #3~#18，間距限間距 7~30
+RE_STIRRUP = re.compile(r'^(\d+-)?#(?:[3-9]|1[0-8])@(?:[7-9]|[1-2]\d|30)$')
 # 尺寸: NxM
-RE_DIMENSION = re.compile(r'^\d+\s*[xX×*]\s*\d+$')
+RE_DIMENSION = re.compile(r'^\d+[xX×*]\d+$')
 # 搭接長度: 2~3 位數純數字
 RE_LAP_LENGTH = re.compile(r'^\d{2,3}$')
 # 腰筋: 含 E.F.
@@ -48,29 +48,32 @@ def classify_text(text: str) -> FormatType:
     if not s or len(s) < 1:
         return FormatType.UNKNOWN
     
+    # 建立無空白版本供嚴格的正則比對，消除 OCR 內部隨機空白干擾
+    s_test = s.replace(" ", "")
+    
     # 含 @ → 一定是箍筋
-    if '@' in s and RE_STIRRUP.match(s):
+    if '@' in s_test and RE_STIRRUP.match(s_test):
         return FormatType.STIRRUP
     
     # 含 # 但不含 @ → 主筋
-    if '#' in s and RE_REBAR.match(s):
+    if '#' in s_test and RE_REBAR.match(s_test):
         return FormatType.REBAR
     
     # 腰筋 (含 E.F.)
-    if RE_FACE_BAR.search(s):
+    if RE_FACE_BAR.search(s_test):
         return FormatType.FACE_BAR
-    
-    # 尺寸 (NxM)
-    if RE_DIMENSION.match(s):
+        
+    # 九宮格角落/純數字 → 高機率是搭接長度
+    if RE_LAP_LENGTH.match(s_test):
+        return FormatType.LAP_LENGTH
+        
+    # 尺寸格式 NxM
+    if RE_DIMENSION.match(s_test):
         return FormatType.DIMENSION
     
     # 梁編號
     if _is_beam_id(s):
         return FormatType.BEAM_ID
-    
-    # 純數字 2~3 位 → 搭接長度 (需結合位置判斷，先暫歸此類)
-    if RE_LAP_LENGTH.match(s):
-        return FormatType.LAP_LENGTH
     
     return FormatType.UNKNOWN
 
@@ -122,6 +125,19 @@ FIELD_MAP = {
     # 搭接長度在正上/正下方的 fallback (少見但可能)
     (FormatType.LAP_LENGTH, "正上方"): "lap_length_top_left",
     (FormatType.LAP_LENGTH, "正下方"): "lap_length_bottom_left",
+}
+
+# 若格式未知 (或無對應映射)，強制採用空間位置預設欄位 (用於 Fallback)
+POS_TO_DEFAULT_FIELD = {
+    "左上方": "top_main_bars_left",
+    "正上方": "top_main_bars_mid",
+    "右上方": "top_main_bars_right",
+    "正左方": "stirrups_left",
+    "正中央": "stirrups_middle",
+    "正右方": "stirrups_right",
+    "左下方": "bottom_main_bars_left",
+    "正下方": "bottom_main_bars_mid",
+    "右下方": "bottom_main_bars_right"
 }
 
 # 陣列欄位 (多筆同位置要合併成 list)
@@ -209,8 +225,12 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
                     low_conf_items.append(item)
                     assignments.append(f"⚠️ beam_id 信心不足 <90%: '{text}' (conf={conf:.0%}) → LLM")
             else:
+                default_field = POS_TO_DEFAULT_FIELD.get(core_pos)
+                if default_field:
+                    item["predicted_field"] = default_field
+                    item["fallback_suffix"] = "(未匹配格式)"
                 low_conf_items.append(item)
-                assignments.append(f"⚠️ beam_id 位置不在下方: '{text}' @ {core_pos} → LLM")
+                assignments.append(f"⚠️ beam_id 位置不在邊線: '{text}' @ {core_pos} → LLM")
                 
             continue
         
@@ -225,51 +245,75 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
                     low_conf_items.append(item)
                     assignments.append(f"⚠️ dimensions 信心不足 <90%: '{text}' (conf={conf:.0%}) → LLM")
             else:
+                default_field = POS_TO_DEFAULT_FIELD.get(core_pos)
+                if default_field:
+                    item["predicted_field"] = default_field
+                    item["fallback_suffix"] = "(未匹配格式)"
                 low_conf_items.append(item)
-                assignments.append(f"⚠️ dimensions 位置不在下方: '{text}' @ {core_pos} → LLM")
+                assignments.append(f"⚠️ dimensions 位置異常: '{text}' @ {core_pos} → LLM")
                 
             continue
         
         if fmt == FormatType.FACE_BAR:
             normalized = normalize_text(text)
-            if conf >= 0.95:
+            # 腰筋 (E.F.) 文字特徵極端明顯，發生誤判為其他鋼筋的機率近乎零，大幅放寬門檻 (85% 直填，80% 邊緣)
+            if conf >= 0.85:
                 beam["face_bars"] = normalized
                 assignments.append(f"✅ face_bars = '{normalized}' (conf={conf:.0%})")
-            elif conf >= 0.90:
+            elif conf >= 0.80:
                 borderline_records.append((item, "face_bars", normalized, conf))
             else:
+                item["predicted_field"] = "face_bars"
                 low_conf_items.append(item)
-                assignments.append(f"⚠️ face_bars 信心不足 <90%: '{text}' (conf={conf:.0%}) → LLM")
+                assignments.append(f"⚠️ face_bars 信心極弱 <80%: '{text}' (conf={conf:.0%}) → LLM")
             continue
         
         if fmt == FormatType.LAP_LENGTH:
             # 搭接長度只有在上下方才有意義，若在正中央/正左/正右 → 可能不是搭接長度
             if "上" not in core_pos and "下" not in core_pos:
+                default_field = POS_TO_DEFAULT_FIELD.get(core_pos)
+                if default_field:
+                    item["predicted_field"] = default_field
+                    item["fallback_suffix"] = "(未匹配格式)"
                 low_conf_items.append(item)
-                assignments.append(f"⚠️ 疑似搭接長度但位置不明: '{text}' @ {core_pos} → LLM")
+                assignments.append(f"⚠️ 疑似搭接長度但位置異常: '{text}' @ {core_pos} → LLM")
                 continue
         
         # Step 4: 通用映射
         if field_key:
             if conf >= 0.95:
                 if field_key in LIST_FIELDS:
-                    beam[field_key].append(text)
+                    # 若文字包含逗號(例如先前合併的多排鋼筋)，拆分後加入
+                    for part in text.split(","):
+                        beam[field_key].append(part.strip())
                     assignments.append(f"✅ {field_key} += '{text}' (conf={conf:.0%})")
                 else:
-                    beam[field_key] = text
-                    assignments.append(f"✅ {field_key} = '{text}' (conf={conf:.0%})")
+                    if not beam.get(field_key):
+                        beam[field_key] = text
+                        assignments.append(f"✅ {field_key} = '{text}' (conf={conf:.0%})")
+                    else:
+                        assignments.append(f"⚠️ {field_key} 已有值，略過重複物件 '{text}' (conf={conf:.0%})")
             elif conf >= 0.90:
                 # 信心落在 90~95%：暫存到邊緣區，等待最後裁決
                 borderline_records.append((item, field_key, text, conf))
             else:
                 # 信心低於 90%，強制要求 LLM 檢查
+                item["predicted_field"] = field_key
                 low_conf_items.append(item)
                 assignments.append(f"⚠️ {field_key} 信心不足 <90%: '{text}' (conf={conf:.0%}) → LLM")
         elif fmt == FormatType.UNKNOWN:
+            default_field = POS_TO_DEFAULT_FIELD.get(core_pos)
+            if default_field:
+                item["predicted_field"] = default_field
+                item["fallback_suffix"] = "(未匹配格式)"
             low_conf_items.append(item)
             assignments.append(f"❌ 無法分類: '{text}' @ {core_pos} (conf={conf:.0%}) → LLM")
         else:
             # 有格式但沒有對應的映射位置
+            default_field = POS_TO_DEFAULT_FIELD.get(core_pos)
+            if default_field:
+                item["predicted_field"] = default_field
+                item["fallback_suffix"] = "(未匹配格式)"
             low_conf_items.append(item)
             assignments.append(f"⚠️ 有格式({fmt.value})但位置({core_pos})無映射 → LLM")
             
@@ -280,14 +324,16 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
     if must_call_llm:
         # LLM 既然都要加班了，那就把 90~95% 安全區間的卡牌也全部丟給他順便檢查！
         for item, fk, t, c in borderline_records:
+            item["predicted_field"] = fk
             low_conf_items.append(item)
             assignments.append(f"⚠️ {fk} 落入邊緣檢查區間 (90~95%): '{t}' (conf={c:.0%}) → LLM 順便檢查")
     else:
         # 大家都表現得很好 (>90%)，LLM 可以放假！
-        # 直接把 90~95% 邊緣區的資料寫入正式欄位
+        # 直接把 90~95% 邊緣区的手工寫入正式欄位
         for item, field_key, text, conf in borderline_records:
             if field_key in LIST_FIELDS:
-                beam[field_key].append(text)
+                for part in text.split(","):
+                    beam[field_key].append(part.strip())
                 assignments.append(f"✅ {field_key} += '{text}' (沒叫LLM，直接放行 conf={conf:.0%})")
             else:
                 beam[field_key] = text
