@@ -510,11 +510,16 @@ class TableExtractor:
         # 不剔除 (因為它代表「這裡還有資料」的珍貴線索)，
         # 而是降低信心值，避免它被自動歸類為搭接長度，讓 LLM 從圖面做最終判定。
         # 
-        # ⚠️ 純文字比對 — 不依賴像素距離，解析度無關 (Resolution-Independent)
+        # ⚠️ 純文字比對 + 結構域值域約束 — 解析度無關 (Resolution-Independent)
+        #    只對 ≤ 30 的短數字降信心 (鋼筋號數 #3~#18, 箍筋間距 @7~@30)
+        #    > 30 的數字可能是真搭接長度 (如 65, 110, 240)，不降信心
         for i, item in enumerate(final_items):
             txt = item["text"].strip()
             fmt = classify_text(txt)
             if fmt in (FormatType.LAP_LENGTH, FormatType.UNKNOWN) and re.match(r'^\d{1,3}$', txt):
+                val = int(txt)
+                if val > 30:
+                    continue  # > 30 的數字可能是真搭接長度，不降信心
                 for j, other in enumerate(final_items):
                     if i == j: continue
                     other_fmt = classify_text(other["text"].strip())
@@ -523,7 +528,6 @@ class TableExtractor:
                     if txt in other_raw:
                         item["conf"] = 0.3  # 強制降低信心，送 LLM 覆核
                         item["_rebar_proximity"] = True  # 標記：疑似鋼筋/箍筋殘片
-                        print(f"  [Text-Demote] '{txt}' 疑似殘片 (是 '{other['text']}' 的子字串), 信心降至 30%")
                         break
                 
         ctx.ocr_items = final_items
