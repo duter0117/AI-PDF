@@ -368,19 +368,25 @@ class VectorExtractor:
                 if current_vac > 0:
                     vacuums.append((len(vacuum_mask) - current_vac, current_vac))
                     
-                # 尋找最佳的一刀切斷點：
+                # 尋找最佳的一刀切斷點（門檻隨 ratio 動態縮放）：
+                big_gap = max(6, int(25 * ratio))
+                med_gap = max(3, int(10 * ratio))
+                med_dist = max(10, int(40 * ratio))
+                small_gap = max(1, int(3 * ratio))
+                far_dist = max(18, int(70 * ratio))
+                
                 best_cut_offset = -1
                 for start, length in vacuums:
-                    # 1. 如果遇到超級大斷層 (> 25px)，豪不猶豫馬上切，這一定是梁間縫隙
-                    if length > 25:
+                    # 1. 如果遇到超級大斷層，豪不猶豫馬上切，這一定是梁間縫隙
+                    if length > big_gap:
                         best_cut_offset = start + (length // 2)
                         break
-                    # 2. 中等斷層 (> 10px)，且距離主梁超過 40px (代表已經越過大部分文字) -> 切！
-                    elif length > 10 and start > 40:
+                    # 2. 中等斷層，且距離主梁已超過一定距離 (代表已經越過大部分文字) -> 切！
+                    elif length > med_gap and start > med_dist:
                         best_cut_offset = start + (length // 2)
                         break
-                    # 3. 即使斷層很小 (>= 3px)，但距離主梁高達 70px 以上 (代表圖形極度擁擠但已經到了下一階段) -> 照切！
-                    elif length >= 3 and start > 70:
+                    # 3. 即使斷層很小，但距離主梁已很遠 (代表圖形極度擁擠但已經到了下一階段) -> 照切！
+                    elif length >= small_gap and start > far_dist:
                         best_cut_offset = start + (length // 2)
                         break
                         
@@ -388,11 +394,12 @@ class VectorExtractor:
                     # 成功找到斬波點
                     cutoff_py1 = main_bottom_y + best_cut_offset
                 else:
-                    # 如果什麼真空帶都找不到 (全部黏死)，退回安全底線：最後一個文字的底部 + 15
+                    # 如果什麼真空帶都找不到 (全部黏死)，退回安全底線：最後一個文字的底部 + 安全邊距
+                    safety_margin = max(4, int(15 * ratio))
                     if blocks_below:
-                        cutoff_py1 = min(cutoff_py1, blocks_below[-1][1] + blocks_below[-1][3] + 15)
+                        cutoff_py1 = min(cutoff_py1, blocks_below[-1][1] + blocks_below[-1][3] + safety_margin)
                     else:
-                        cutoff_py1 = min(cutoff_py1, main_bottom_y + 15)
+                        cutoff_py1 = min(cutoff_py1, main_bottom_y + safety_margin)
             # =======================================================================
             
             # 反算回原始座標
