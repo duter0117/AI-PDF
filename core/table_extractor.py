@@ -932,7 +932,7 @@ class TableExtractor:
     # Debug 七彩診斷繪圖 (從 CropContext 讀取所有偵測物件)
     # ================================================================
     @staticmethod
-    def _draw_debug(ctx, index: int):
+    def _draw_debug(ctx, index: int, output_dir: str = "crops", debug_mode: bool = False):
         """在 ctx.img 上繪製完整的七彩診斷光譜，並存檔到 crops/debug_col/。
         同時回傳一份只畫紅線的 Gemini 用乾淨圖片。
         """
@@ -1546,7 +1546,7 @@ class TableExtractor:
                                     f.write(ocr_hint_refreshed)
                                 
                             # === 繪圖 + 存檔 ===
-                            img_gemini, drawn_lines, red_line_hint = self._draw_debug(ctx, index)
+                            img_gemini, drawn_lines, red_line_hint = self._draw_debug(ctx, index, output_dir, debug_mode)
                             img_gemini.save(os.path.join(output_dir, f"crop_{index}{file_suffix}.png"))
                             
                             # === OCR-First: 規則引擎直接分配欄位 ===
