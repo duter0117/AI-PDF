@@ -60,15 +60,16 @@ async def extract_vectors_node(state: GraphState):
         update_task_progress(tid, 10, "[Phase 1] PyMuPDF 解析啟動：提取底層幾何座標...")
         
     print("[Agent] 正在提取 PDF 向量幾何，並執行 OpenCV 自適應尋邊...")
-    extractor = VectorExtractor(state["pdf_bytes"])
-    data = extractor.extract_page_data(state["page_num"])
+    import asyncio
     
-    if tid:
-        update_task_progress(tid, 30, f"[Phase 1] OpenCV 降噪裁切執行中：已為大圖分析出潛力區塊...")
-        
-    # 執行 Phase 3 的 OpenCV 形狀辨識拆框演算法
-    cv_params = state.get("cv_params", {})
-    cv_bboxes, cv_metrics = extractor.extract_opencv_bboxes(state["page_num"], cv_params)
+    def _run_cv_heavy():
+        extractor = VectorExtractor(state["pdf_bytes"])
+        data = extractor.extract_page_data(state["page_num"])
+        cv_bboxes, cv_metrics = extractor.extract_opencv_bboxes(state["page_num"], state.get("cv_params", {}))
+        return extractor, data, cv_bboxes, cv_metrics
+
+    extractor, data, cv_bboxes, cv_metrics = await asyncio.to_thread(_run_cv_heavy)
+    
     data["cv_bboxes"] = cv_bboxes
     data["cv_metrics"] = cv_metrics
     
