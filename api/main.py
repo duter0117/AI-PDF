@@ -21,8 +21,8 @@ app = FastAPI(title="Structural Drawing AI Parser API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允許所有網域請求 (解決 Failed to fetch CORS 問題)
-    allow_credentials=True,
+    allow_origins=["*"],  # 允許所有網域請求
+    allow_credentials=False, # 當 origin 為 * 時，credentials 必須是 False (標準 CORS 規範)
     allow_methods=["*"],  # 允許所有方法 (GET, POST 等)
     allow_headers=["*"],
 )
