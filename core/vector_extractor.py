@@ -591,11 +591,13 @@ class VectorExtractor:
                                     "w": max(xs) - min(xs)
                                 })
                                 
-                    # 標題合併修正 (Spatial Merging)
+                    # 標題合併修正 (Spatial Merging) — 門檻隨 ratio 動態縮放
+                    merge_cx_thresh = max(100, int(300 * ratio))  # 基準 300px @4x
+                    merge_cy_thresh = max(20, int(60 * ratio))    # 基準 60px @4x
                     for rt in raw_titles:
                         merged = False
                         for pt in potential_titles:
-                            if abs(rt["cx"] - pt["cx"]) < 300 and abs(rt["cy"] - pt["cy"]) < 60:
+                            if abs(rt["cx"] - pt["cx"]) < merge_cx_thresh and abs(rt["cy"] - pt["cy"]) < merge_cy_thresh:
                                 pt["text"] += " " + rt["text"]
                                 pt["cx"] = (pt["cx"] + rt["cx"]) / 2
                                 pt["cy"] = (pt["cy"] + rt["cy"]) / 2
@@ -685,11 +687,12 @@ class VectorExtractor:
                     continue
                 
                 # === Phase 3.7 自檢 規則 2: Y 軸多排偵測 ===
-                # cy 是 4x 像素座標，120px at 4x ≈ 30pt
+                # 門檻隨 ratio 動態縮放 (基準 120px @4x ≈ 30pt)
+                y_row_thresh = max(40, int(120 * ratio))
                 sorted_by_y = sorted(filtered_titles, key=lambda t: t["cy"])
                 y_groups = [[sorted_by_y[0]]]
                 for t in sorted_by_y[1:]:
-                    if t["cy"] - y_groups[-1][-1]["cy"] > 120:  # 120px at 4x = 30pt
+                    if t["cy"] - y_groups[-1][-1]["cy"] > y_row_thresh:
                         y_groups.append([t])
                     else:
                         y_groups[-1].append(t)
@@ -704,11 +707,13 @@ class VectorExtractor:
                         lowest_bottom = max(t["bottom_y"] for t in group)
                         
                         # 截斷尾巴：每個子塊的底邊緊貼其所屬那排的最低標題
-                        sub_y1 = (py0 + lowest_bottom + 5) / scale_factor
+                        title_pad = max(2, int(5 * ratio))  # 基準 5px @4x
+                        sub_y1 = (py0 + lowest_bottom + title_pad) / scale_factor
                         sub_y1 = min(orig_y1, sub_y1)
                         
                         if g_idx < len(y_groups) - 1:
-                            cut_pdf_y = (py0 + lowest_bottom + 20) / scale_factor  # 5pt below
+                            cut_pad = max(7, int(20 * ratio))  # 基準 20px @4x ≈ 5pt
+                            cut_pdf_y = (py0 + lowest_bottom + cut_pad) / scale_factor
                             # 上半部
                             sub_bbox = [orig_x0, prev_pdf_y, orig_x1, sub_y1]
                             original_parents.append(sub_bbox)
@@ -722,7 +727,7 @@ class VectorExtractor:
                                     mid_x = (x_sorted[i]["cx"] + x_sorted[i+1]["cx"]) / 2.0
                                     split_points_x.append(px0 + mid_x)
                                 span_edges = [px0] + split_points_x + [px1]
-                                overlap = 200
+                                overlap = max(60, int(200 * ratio))  # 基準 200px @4x ≈ 50pt
                                 for i in range(len(span_edges) - 1):
                                     child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
                                     child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
@@ -747,7 +752,7 @@ class VectorExtractor:
                                     mid_x = (x_sorted[i]["cx"] + x_sorted[i+1]["cx"]) / 2.0
                                     split_points_x.append(px0 + mid_x)
                                 span_edges = [px0] + split_points_x + [px1]
-                                overlap = 200
+                                overlap = max(60, int(200 * ratio))  # 基準 200px @4x ≈ 50pt
                                 for i in range(len(span_edges) - 1):
                                     child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
                                     child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
@@ -765,7 +770,7 @@ class VectorExtractor:
                     # [動態截斷尾巴]
                     lowest_y_px = max(t["bottom_y"] for t in filtered_titles)
                     # lowest_y_px 位於 search_img 內，該圖片最上緣對應的 PDF 坐標是 py0 / scale_factor
-                    new_orig_y1 = (py0 + lowest_y_px + 5) / scale_factor
+                    new_orig_y1 = (py0 + lowest_y_px + max(2, int(5 * ratio))) / scale_factor
                     orig_y1 = min(orig_y1, new_orig_y1)
                     
                 original_parents.append([orig_x0, orig_y0, orig_x1, orig_y1])
@@ -801,7 +806,7 @@ class VectorExtractor:
                         split_points_x.append(px0 + mid_x)
                         
                     span_edges = [px0] + split_points_x + [px1]
-                    overlap = 200
+                    overlap = max(60, int(200 * ratio))  # 基準 200px @4x ≈ 50pt
                     
                     for i in range(len(span_edges) - 1):
                         child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
