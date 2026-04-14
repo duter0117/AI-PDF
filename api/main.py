@@ -56,6 +56,9 @@ async def run_extraction_workflow(task_id: str, pdf_bytes: bytes, page_num: int,
     cv_params["output_dir"] = output_dir
     cv_params["debug_mode"] = os.getenv("DEBUG_MODE", "false").lower() == "true"
     try:
+        import time
+        start_time = time.time()
+        
         result = await graph.ainvoke({
             "pdf_bytes": pdf_bytes,
             "page_num": page_num,
@@ -63,7 +66,46 @@ async def run_extraction_workflow(task_id: str, pdf_bytes: bytes, page_num: int,
             "cv_params": cv_params
         })
         final_output = result.get("final_output", {})
-        complete_task(task_id, final_output)
+        
+        # 產生全域圖片給前端
+        global_image = ""
+        try:
+            import fitz
+            import base64
+            doc = fitz.Document(stream=pdf_bytes, filetype="pdf")
+            page = doc[page_num]
+            for beam in final_output.get("aligned_beams", []):
+                rect = beam.get("spatial_anchor_rect_x_y")
+                if rect and len(rect) == 4:
+                    r = fitz.Rect(rect[0], rect[1], rect[2], rect[3])
+                    page.draw_rect(r, color=(1, 0, 0), width=2)
+                    beam_id = beam.get("beam_id", "")
+                    if beam_id:
+                        page.insert_text((r.x0, r.y0 - 5), str(beam_id), fontsize=10, color=(0, 0, 1))
+
+            pix = page.get_pixmap(dpi=150)
+            img_data = pix.tobytes("png")
+            global_image_b64 = base64.b64encode(img_data).decode("utf-8")
+            global_image = f"data:image/png;base64,{global_image_b64}"
+        except Exception as img_err:
+            print(f"Failed to generate global image for background task: {img_err}")
+
+        # 計算指標
+        elapsed = round(time.time() - start_time, 2)
+        api_metrics = final_output.get("api_metrics", {})
+        total_tokens = api_metrics.get("prompt_tokens", 0) + api_metrics.get("candidates_tokens", 0)
+        
+        # 整理為與同步 API 相同的前端格式
+        front_end_result = {
+            "global_image": global_image,
+            "execution_time_seconds": elapsed,
+            "llm_calls": api_metrics.get("llm_calls", 0),
+            "tokens_used": total_tokens,
+            "analysis_result": final_output.get("aligned_beams", []),
+            "raw_json_string": final_output.get("raw_json_string", "")
+        }
+
+        complete_task(task_id, front_end_result)
     except Exception as e:
         fail_task(task_id, str(e))
 
