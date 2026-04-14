@@ -504,35 +504,27 @@ class TableExtractor:
                         d_iou, d_iom = compute_overlap(item_box, o_box)
                         pass # print(f"    vs REBAR '{other['text']}' bbox={o_box} → IoU={d_iou:.3f}, IoM={d_iom:.3f}")
         
-        # === 近距離疑似殘片降信心 (Proximity Confidence Demotion) ===
-        # 如果一個短數字出現在 REBAR 密集區域且字面上是鄰近 REBAR 的子字串，
-        # 它極可能是 OCR 對某排鋼筋的部分辨識結果 (如 "14-#11" 只讀到 "11")。
-        # 不剔除 (因為它代表「這裡還有一排鋼筋」的珍貴線索)，
+        # === 疑似殘片降信心 (Text-Based Confidence Demotion) ===
+        # 如果一個短數字（1~3位）是同張 crop 裡某條 REBAR 或 STIRRUP 的子字串，
+        # 它極可能是 OCR 的部分辨識殘片 (如 "14-#11" 只讀到 "11", "#5@12" 只讀到 "12")。
+        # 不剔除 (因為它代表「這裡還有資料」的珍貴線索)，
         # 而是降低信心值，避免它被自動歸類為搭接長度，讓 LLM 從圖面做最終判定。
+        # 
+        # ⚠️ 純文字比對 — 不依賴像素距離，解析度無關 (Resolution-Independent)
         for i, item in enumerate(final_items):
             txt = item["text"].strip()
             fmt = classify_text(txt)
             if fmt in (FormatType.LAP_LENGTH, FormatType.UNKNOWN) and re.match(r'^\d{1,3}$', txt):
-                item_cx = item["cx"]
-                item_cy = item["cy"]
-                item_h = item["max_y"] - item["min_y"]
-                
                 for j, other in enumerate(final_items):
                     if i == j: continue
                     other_fmt = classify_text(other["text"].strip())
-                    if other_fmt != FormatType.REBAR: continue
-                    x_overlap = other["min_x"] <= item_cx <= other["max_x"]
-                    other_h = other["max_y"] - other["min_y"]
-                    y_dist = abs(item_cy - (other["min_y"] + other["max_y"]) / 2)
-                    y_close = y_dist < max(item_h, other_h) * 2
-                    
-                    if x_overlap and y_close:
-                        other_raw = other["text"].strip().replace(" ", "")
-                        if txt in other_raw:
-                            item["conf"] = 0.3  # 強制降低信心，送 LLM 覆核
-                            item["_rebar_proximity"] = True  # 標記：疑似鋼筋殘片
-                            print(f"  [Proximity-Demote] '{txt}' 疑似鋼筋部分辨識 (靠近 '{other['text']}'), 信心降至 30%")
-                            break
+                    if other_fmt not in (FormatType.REBAR, FormatType.STIRRUP): continue
+                    other_raw = other["text"].strip().replace(" ", "")
+                    if txt in other_raw:
+                        item["conf"] = 0.3  # 強制降低信心，送 LLM 覆核
+                        item["_rebar_proximity"] = True  # 標記：疑似鋼筋/箍筋殘片
+                        print(f"  [Text-Demote] '{txt}' 疑似殘片 (是 '{other['text']}' 的子字串), 信心降至 30%")
+                        break
                 
         ctx.ocr_items = final_items
 
