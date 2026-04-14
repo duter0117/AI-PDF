@@ -418,8 +418,8 @@ class VectorExtractor:
         
         def is_title_candidate(text):
             """
-            用結構化濾除法辨識梁編號標題。
-            不是強制規定格式，而是排除不可能是標題的東西。
+            嚴格辨識梁編號標題。
+            必須符合結構圖梁編號的特定格式，而非僅「含有字母」。
             """
             text = text.strip()
             if len(text) < 2: 
@@ -427,11 +427,23 @@ class VectorExtractor:
             # 絕對不是標題的：鋼筋號數(#) 與 間距(@)
             if '@' in text or '#' in text: 
                 return False
-            # 尺寸格式 (如 50x70, 50*70) 是標題附屬物 -> 是標題 
+            # 尺寸格式 (如 50x70, 50*70) → 標題附屬物，放行
             if re.search(r'\d+\s*[xX×*]\s*\d+', text): 
                 return True
-            # 如果含有英文字母 (如 G5-1, RF, WB-3) -> 大機率是標題
-            if re.search(r'[A-Za-z]', text): 
+            # 排除：單獨的樓層前綴 (B4F, RF, 1F, 2F, B1F 等)
+            if re.match(r'^[BR]?\d*F$', text, re.IGNORECASE):
+                return False
+            # 排除：腰筋標記 (E.F., EF)
+            if re.match(r'^E\.?F\.?$', text, re.IGNORECASE):
+                return False
+            # 排除：純數字 + 短線 (如 2-5, 13, 110 等量化數值)
+            if re.match(r'^[\d\-\.]+$', text):
+                return False
+            # 合法梁前綴 + 後續字元 (如 G1-2, FB1-4, CB-5, SB1)
+            if re.search(r'(F?W?[BGCS]|FB|FG|RB|CB|SB)\s*\d', text, re.IGNORECASE):
+                return True
+            # 含樓層前綴 + 空格 + 梁編號 (如 B4F FB1-4, RF G1)
+            if re.search(r'[BR]\d+F\s+\w', text, re.IGNORECASE):
                 return True
             return False
             
@@ -578,7 +590,38 @@ class VectorExtractor:
                     ocr_result, _ = self._title_ocr(search_img)
                     
                     if ocr_result:
-                        for idx, (ocr_bbox, ocr_text, ocr_conf) in enumerate(ocr_result):
+                        # === IoU/IoM 去重：移除被大框完全涵蓋的小碎片 ===
+                        def _ocr_iom(box_a, box_b):
+                            """計算 box_a 被 box_b 涵蓋的比例 (Intersection over Min)"""
+                            a_xs = [pt[0] for pt in box_a]
+                            a_ys = [pt[1] for pt in box_a]
+                            b_xs = [pt[0] for pt in box_b]
+                            b_ys = [pt[1] for pt in box_b]
+                            a_x0, a_y0, a_x1, a_y1 = min(a_xs), min(a_ys), max(a_xs), max(a_ys)
+                            b_x0, b_y0, b_x1, b_y1 = min(b_xs), min(b_ys), max(b_xs), max(b_ys)
+                            ix0 = max(a_x0, b_x0); iy0 = max(a_y0, b_y0)
+                            ix1 = min(a_x1, b_x1); iy1 = min(a_y1, b_y1)
+                            if ix1 <= ix0 or iy1 <= iy0:
+                                return 0.0
+                            inter = (ix1 - ix0) * (iy1 - iy0)
+                            a_area = max(1, (a_x1 - a_x0) * (a_y1 - a_y0))
+                            return inter / a_area
+                        
+                        # 按面積由大到小排序，小碎片如果 IoM > 0.5 被大框涵蓋就刪除
+                        ocr_sorted = sorted(ocr_result, key=lambda r: -(max(p[0] for p in r[0]) - min(p[0] for p in r[0])) * (max(p[1] for p in r[0]) - min(p[1] for p in r[0])))
+                        ocr_keep_mask = [True] * len(ocr_sorted)
+                        for i in range(len(ocr_sorted)):
+                            if not ocr_keep_mask[i]: continue
+                            for j in range(i + 1, len(ocr_sorted)):
+                                if not ocr_keep_mask[j]: continue
+                                iom = _ocr_iom(ocr_sorted[j][0], ocr_sorted[i][0])
+                                if iom > 0.5:
+                                    # 小框被大框涵蓋超過 50%，且小框文字是大框文字的子字串 → 移除小碎片
+                                    if ocr_sorted[j][1].strip() in ocr_sorted[i][1].strip():
+                                        ocr_keep_mask[j] = False
+                        ocr_deduped = [ocr_sorted[i] for i in range(len(ocr_sorted)) if ocr_keep_mask[i]]
+                        
+                        for idx, (ocr_bbox, ocr_text, ocr_conf) in enumerate(ocr_deduped):
                             if ocr_conf > 0.5 and is_title_candidate(ocr_text):
                                 ys = [pt[1] for pt in ocr_bbox]
                                 xs = [pt[0] for pt in ocr_bbox]
