@@ -4,6 +4,10 @@ import json
 import fitz
 from typing import Dict, Any
 from PIL import Image, ImageDraw, ImageFont
+from core.debug_logger import debug_print
+
+print = debug_print
+
 
 class VectorExtractor:
     def __init__(self, pdf_bytes: bytes):
@@ -139,6 +143,60 @@ class VectorExtractor:
             
         return results
 
+    @staticmethod
+    def _content_trim_bboxes(bboxes, thresh, page_w, page_h,
+                             pad_x=60, pad_y=20, trim_bottom=False):
+        """
+        Content-Aware Trim: 使用二值化圖 (thresh, 4x scale) 收緊 bbox 邊界。
+        
+        Args:
+            bboxes: list of [x0, y0, x1, y1] in PDF units (mutated in-place)
+            thresh: 二值圖 (4x scale, 白=有墨水)
+            page_w, page_h: 頁面尺寸 (PDF units), 用於 clamp
+            pad_x: X 軸緩衝 (4x px), 預設 60 ≈ 15pt
+            pad_y: Y 軸緩衝 (4x px), 預設 20 ≈ 5pt
+            trim_bottom: 是否也收緊底部 (母塊階段 False, Pass2 階段 True)
+        """
+        import numpy as np
+        for bbox in bboxes:
+            # (1) Page clamp
+            bbox[0] = max(0.0, bbox[0])
+            bbox[1] = max(0.0, bbox[1])
+            bbox[2] = min(page_w, bbox[2])
+            bbox[3] = min(page_h, bbox[3])
+            
+            # (2) Content trim via binary projection
+            px0 = max(0, int(bbox[0] * 4))
+            py0 = max(0, int(bbox[1] * 4))
+            px1 = min(thresh.shape[1], int(bbox[2] * 4))
+            py1 = min(thresh.shape[0], int(bbox[3] * 4))
+            if px1 <= px0 or py1 <= py0:
+                continue
+            
+            roi = thresh[py0:py1, px0:px1]
+            if roi.size == 0:
+                continue
+            
+            # X 軸
+            col_sums = roi.sum(axis=0)
+            nonzero_cols = np.where(col_sums > 0)[0]
+            if len(nonzero_cols) > 0:
+                trim_left  = max(0,              nonzero_cols[0]  - pad_x)
+                trim_right = min(px1 - px0 - 1, nonzero_cols[-1] + pad_x)
+                bbox[0] = (px0 + trim_left)  / 4.0
+                bbox[2] = (px0 + trim_right) / 4.0
+            
+            # Y 軸頂部
+            row_sums = roi.sum(axis=1)
+            nonzero_rows = np.where(row_sums > 0)[0]
+            if len(nonzero_rows) > 0:
+                trim_top = max(0, nonzero_rows[0] - pad_y)
+                bbox[1] = (py0 + trim_top) / 4.0
+                # Y 軸底部 (僅在 trim_bottom=True 時)
+                if trim_bottom:
+                    trim_bot = min(py1 - py0 - 1, nonzero_rows[-1] + pad_y)
+                    bbox[3] = (py0 + trim_bot) / 4.0
+
     def _nms_bboxes(self, bboxes: list, iou_thresh: float = 0.5) -> tuple[list, list]:
         """
         Non-Maximum Suppression：過濾高度重疊的 bbox，避免同一張圖被傳給 Gemini 多次。
@@ -158,11 +216,17 @@ class VectorExtractor:
                 inter_x1 = min(bbox[2], k[2])
                 inter_y1 = min(bbox[3], k[3])
                 inter = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
-                area_a = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-                area_b = (k[2] - k[0]) * (k[3] - k[1])
-                iou = inter / (area_a + area_b - inter + 1e-6)
-                if iou > iou_thresh:
+                area_small = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                # 這邊改用 IoA (Intersection over Area_min)，因為 bbox 是依面積降序排列的，
+                # 所以 bbox 是現在要檢查的比較小的框。只要小框有大部分被大框(k)吃掉，就殺掉！
+                ioa = inter / (area_small + 1e-6)
+                if ioa > iou_thresh:
                     suppressed = True
+                    # 融合 (Merge): 只要超過閾值，就把小框(bbox)的面積撐進大框(k)裡
+                    k[0] = min(k[0], bbox[0])
+                    k[1] = min(k[1], bbox[1])
+                    k[2] = max(k[2], bbox[2])
+                    k[3] = max(k[3], bbox[3])
                     break
             if not suppressed:
                 keep.append(bbox)
@@ -282,100 +346,7 @@ class VectorExtractor:
             
         results.sort(key=lambda b: (b[1], b[0]))
         
-        # === Phase 3.5: OpenCV 形態學垂直微聚類 (視覺斬波) ===
-        # 對抗過度 Padding 造成的雜訊，掃描標題與下根梁之間的「無文真空帶」切斷
-        refined_results = []
-        for bbox in results:
-            orig_x0, orig_y0, orig_x1, orig_y1 = bbox
-            px0, py0 = int(orig_x0 * 4.0), int(orig_y0 * 4.0)
-            px1, py1 = int(orig_x1 * 4.0), int(orig_y1 * 4.0)
-            
-            sub_thresh = thresh[py0:py1, px0:px1]
-            if sub_thresh.shape[0] < 20 or sub_thresh.shape[1] < 20:
-                refined_results.append(bbox)
-                continue
-                
-            # 專門針對文字特性，進行「水平強烈、垂直極輕微(以免吃掉跨梁間隙)」的膨脹
-            text_kernel = np.ones((4, 40), np.uint8)
-            sub_dilated = cv2.dilate(sub_thresh, text_kernel, iterations=1)
-            
-            sub_contours, _ = cv2.findContours(sub_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not sub_contours:
-                refined_results.append(bbox)
-                continue
-                
-            sub_boxes = [cv2.boundingRect(c) for c in sub_contours]
-            
-            # 1. 找出佔地最大的「主梁本體」
-            main_box = max(sub_boxes, key=lambda b: b[2] * b[3])
-            main_bottom_y = main_box[1] + main_box[3]
-            
-            # 2. 收集位於主梁下方所有的獨立文字島嶼
-            blocks_below = []
-            for b_idx, b in enumerate(sub_boxes):
-                if b[1] > main_bottom_y - 15: # 允許些微重疊
-                    blocks_below.append(b)
-                    
-            # 依據 Y 軸高度由上往下排列
-            blocks_below.sort(key=lambda b: b[1])
-            
-            # 預設切除線定在框底
-            cutoff_py1 = py1 - py0 
-            
-            # === 利用 1D 水平像素投影 (Horizontal Projection) 強效尋找真空斬波帶 ===
-            # 因為 OpenCV 的膨脹容易把雜訊或格線連在一起，我們直接結算每行的黑色像素數量
-            if main_bottom_y < cutoff_py1:
-                below_img = sub_thresh[main_bottom_y:, :]
-                row_sums = np.sum(below_img > 0, axis=1)
-                
-                # 定義真空帶：單列像素 < 10 (容許一點點垂直線或雜訊穿過)
-                vacuum_mask = row_sums < 10
-                vacuums = []
-                current_vac = 0
-                for i, is_vac in enumerate(vacuum_mask):
-                    if is_vac:
-                        current_vac += 1
-                    else:
-                        if current_vac > 0:
-                            vacuums.append((i - current_vac, current_vac)) # (相對起點, 長度)
-                            current_vac = 0
-                if current_vac > 0:
-                    vacuums.append((len(vacuum_mask) - current_vac, current_vac))
-                    
-                # 尋找最佳的一刀切斷點：
-                best_cut_offset = -1
-                for start, length in vacuums:
-                    # 1. 如果遇到超級大斷層 (> 25px)，豪不猶豫馬上切，這一定是梁間縫隙
-                    if length > 25:
-                        best_cut_offset = start + (length // 2)
-                        break
-                    # 2. 中等斷層 (> 10px)，且距離主梁超過 40px (代表已經越過大部分文字) -> 切！
-                    elif length > 10 and start > 40:
-                        best_cut_offset = start + (length // 2)
-                        break
-                    # 3. 即使斷層很小 (>= 3px)，但距離主梁高達 70px 以上 (代表圖形極度擁擠但已經到了下一階段) -> 照切！
-                    elif length >= 3 and start > 70:
-                        best_cut_offset = start + (length // 2)
-                        break
-                        
-                if best_cut_offset != -1:
-                    # 成功找到斬波點
-                    cutoff_py1 = main_bottom_y + best_cut_offset
-                else:
-                    # 如果什麼真空帶都找不到 (全部黏死)，退回安全底線：最後一個文字的底部 + 15
-                    if blocks_below:
-                        cutoff_py1 = min(cutoff_py1, blocks_below[-1][1] + blocks_below[-1][3] + 15)
-                    else:
-                        cutoff_py1 = min(cutoff_py1, main_bottom_y + 15)
-            # =======================================================================
-            
-            # 反算回原始座標
-            new_orig_y1 = orig_y0 + (cutoff_py1 / 4.0)
-            bbox[3] = min(orig_y1, new_orig_y1)
-            refined_results.append(bbox)
-            
-        results = list(refined_results)  # 必須淺拷貝！避免 extend 污染 refined_results 的 len()
-        # ==============================================================
+
         
         # === Phase 3.6: Title Reclaim (標題歸屬回收) ===
         # 策略：先檢查每個 bbox 是否已包含梁編號標題。
@@ -495,9 +466,25 @@ class VectorExtractor:
         
         if title_reclaim_count > 0:
             print(f"[Phase 3.6] 標題歸屬回收: {title_reclaim_count} 個 bbox 已擴展以包含梁編號")
+            
+        # === Phase 3.6.5: 二次貪婪融合 (Post-Reclaim NMS) ===
+        # 因為標題往下延伸後，極有可能侵犯到下方的其他母塊，
+        # 此處再跑一次以 IoA 為基礎的貪婪融合，將重疊區塊合體。
+        original_len = len(results)
+        results, post_nms_drops = self._nms_bboxes(results, iou_thresh=0.5)
+        for nd in post_nms_drops:
+            dropped_for_save.append(("nms_post_reclaim", nd))
+            
+        if len(results) < original_len:
+            print(f"[Phase 3.6.5] 二次貪婪融合: 因標題向下擴張產生重疊，將 {original_len} 個母塊合體為 {len(results)} 個")
+        
+        # === Phase 3.6.6: 頁面邊界夾緊 + 內容邊界收緊 (母塊級) ===
+        # 母塊階段：不 trim 底部 (留給 Phase 3.7 標題截斷處理)
+        pw, ph = page.rect.width, page.rect.height
+        self._content_trim_bboxes(results, thresh, pw, ph,
+                                  pad_x=60, pad_y=20, trim_bottom=False)
         # ==============================================================
-        
-        
+
         # === Phase 3.8: 連續跨水平分解 (Continuous Beam Decomposition) ===
         # 對於超長連續梁，沿著各個跨度的標題之間進行一維聚類與斬波，切散成單跨獨立影像
         final_single_spans = []
@@ -699,8 +686,11 @@ class VectorExtractor:
                             
                             prev_pdf_y = cut_pdf_y
                         else:
-                            # 最後一排：底邊用原始的 orig_y1
-                            sub_bbox = [orig_x0, prev_pdf_y, orig_x1, orig_y1]
+                            # 最後一排：也要緊貼標題底緣切一刀 (而非保持無上限的 orig_y1)
+                            sub_y1 = (py0 + lowest_bottom + 5) / 4.0
+                            sub_y1 = min(orig_y1, sub_y1)
+                            
+                            sub_bbox = [orig_x0, prev_pdf_y, orig_x1, sub_y1]
                             original_parents.append(sub_bbox)
                             trimmed_parent_logs.append({"idx": len(original_parents) - 1, "titles": group})
                             
@@ -717,7 +707,7 @@ class VectorExtractor:
                                     child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
                                     child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
                                     child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
-                                    final_single_spans.append([child_orig_x0, prev_pdf_y, child_orig_x1, orig_y1])
+                                    final_single_spans.append([child_orig_x0, prev_pdf_y, child_orig_x1, sub_y1])
                                     child_to_parent_map[len(final_single_spans) - 1] = p_idx
                             else:
                                 final_single_spans.append(sub_bbox)
@@ -784,6 +774,11 @@ class VectorExtractor:
                 print(f"[Phase 3.7] Y軸自檢: 刪除 {phase37_deleted} 無標題塊, 垂直分割 {phase37_split} 多排塊")
             print(f"[Phase 3.8] 原有 {len(original_parents)} 母塊。套用單跨裁切後，共準備送出 {len(final_single_spans)} 個最終獨立測資。")
             results = final_single_spans
+            
+            # === Pass 1 Content Trim (單跨級) ===
+            # 每個單跨各自依內容收緊，底部也 trim (Phase 3.7 已截斷過了)
+            self._content_trim_bboxes(results, thresh, pw, ph,
+                                      pad_x=40, pad_y=20, trim_bottom=True)
         # ==============================================================
         # 執行除錯裁切並儲存
         if dropped_for_save or final_single_spans or original_parents:
@@ -838,7 +833,10 @@ class VectorExtractor:
             "parent_count": len(original_parents),
             "child_count": len(final_single_spans),
             "child_to_parent_map": child_to_parent_map,
-            "original_parents": original_parents
+            "original_parents": original_parents,
+            "_thresh": thresh,  # 二值圖供下游 Pass 2 content trim 使用
+            "_page_w": pw,
+            "_page_h": ph
         }
         
         return results, metrics

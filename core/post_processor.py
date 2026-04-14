@@ -1,4 +1,7 @@
 import re
+from core.debug_logger import debug_print
+
+print = debug_print
 
 def _sum_rebars(rebar_list):
     """計算鋼筋陣列的總根數，例如 ['5-#8', '2-#8'] -> 7"""

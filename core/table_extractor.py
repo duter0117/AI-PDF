@@ -6,6 +6,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from core.crop_context import CropContext, DetectedLine, ObjectStatus
+from core.debug_logger import debug_print
+
+print = debug_print
 
 # Suppress the deprecation warning for google.generativeai
 import warnings
@@ -1177,6 +1180,7 @@ class TableExtractor:
                     _f_heal.write("=== 二次精切 (Phase 3.9) 邊界自癒與紀錄 ===\n\n")
                 
                 scan_results = []
+                global_pass1_lines = []
                 cv_bboxes = [list(box) for box in cv_bboxes]  # 確保為可修改的 list
                 
                 for i, bbox in enumerate(cv_bboxes):
@@ -1194,6 +1198,54 @@ class TableExtractor:
                         pdf_bbox=bbox, pdf_scale=actual_scale
                     )
                     self._detect_column_bounds(ctx_scan)
+                    
+                    for ln in ctx_scan.lines:
+                        if ln.kind in ("v_column", "h_beam_edge"):
+                            global_pass1_lines.append({
+                                "kind": ln.kind + "_pass1",
+                                "abs_x": ln.abs_x, "abs_y": ln.abs_y,
+                                "abs_w": ln.abs_w, "abs_h": ln.abs_h
+                            })
+                    
+                    # === Pass 1 Debug 繪圖：在小圖上畫出偵測到的結構線 ===
+                    from PIL import ImageDraw as _IDraw
+                    img_p1_debug = img_enhanced.copy()
+                    draw_p1 = _IDraw.Draw(img_p1_debug)
+                    
+                    # 粉紅線：梁上下邊緣
+                    if ctx_scan.beam_top is not None:
+                        draw_p1.line([(0, ctx_scan.beam_top), (img_p1_debug.width, ctx_scan.beam_top)],
+                                     fill=(255, 105, 180), width=4)
+                    if ctx_scan.beam_bottom is not None:
+                        draw_p1.line([(0, ctx_scan.beam_bottom), (img_p1_debug.width, ctx_scan.beam_bottom)],
+                                     fill=(255, 105, 180), width=4)
+                    
+                    # 垂直線：根據 kind / reject_reason 上色
+                    for d in ctx_scan.lines:
+                        if d.kind.startswith("h_"):
+                            continue
+                        if d.reject_reason == "幾何不符":
+                            color = (128, 128, 128)
+                        elif d.reject_reason == "線寬不符":
+                            color = (128, 0, 128)
+                        elif d.reject_reason == "引線判定":
+                            color = (0, 165, 255)
+                        elif d.kind == "v_column":
+                            color = (0, 255, 0)
+                        else:
+                            color = (128, 128, 128)
+                        draw_p1.line([(d.x, d.y), (d.x, d.y + d.h)], fill=color, width=4)
+                    
+                    # 紅線：最終柱位裁切線
+                    om = 20
+                    if ctx_scan.left_col is not None:
+                        fx = max(0, ctx_scan.left_col - om)
+                        draw_p1.line([(fx, 0), (fx, img_p1_debug.height)], fill="red", width=6)
+                    if ctx_scan.right_col is not None:
+                        fx = min(img_p1_debug.width, ctx_scan.right_col + om)
+                        draw_p1.line([(fx, 0), (fx, img_p1_debug.height)], fill="red", width=6)
+                    
+                    img_p1_debug.save(os.path.join(pass1_dir, f"crop_{i}_debug.png"))
                     
                     # 將畫布上的像素座標，轉換為 PDF 的絕對座標
                     pdf_left = ctx_scan.to_pdf_x(ctx_scan.left_col) if ctx_scan.left_col is not None else None
@@ -1213,12 +1265,21 @@ class TableExtractor:
                         if line_pdf_max > max_obj_x: max_obj_x = line_pdf_max
                     
                     scan_results.append({
-                        "b_min_x": bbox[0],
-                        "b_max_x": bbox[2],
-                        "pdf_left": pdf_left,
-                        "pdf_right": pdf_right,
-                        "min_obj_x": min_obj_x,
-                        "max_obj_x": max_obj_x
+                        "b_min_x"   : bbox[0],
+                        "b_max_x"   : bbox[2],
+                        "pdf_left"  : pdf_left,
+                        "pdf_right" : pdf_right,
+                        "min_obj_x" : min_obj_x,
+                        "max_obj_x" : max_obj_x,
+                        # 梁上下邂緣線的最左/最右也收集起來，供無柱線時的 fallback 使用
+                        "beam_edge_min_x": min(
+                            (ln.abs_x for ln in ctx_scan.lines if ln.kind == "h_beam_edge"),
+                            default=None
+                        ),
+                        "beam_edge_max_x": max(
+                            (ln.abs_x + ln.abs_w for ln in ctx_scan.lines if ln.kind == "h_beam_edge"),
+                            default=None
+                        ),
                     })
                     
                 # 執行修復邏輯
@@ -1230,59 +1291,91 @@ class TableExtractor:
                     if abs(cv_bboxes[i][1] - cv_bboxes[i+1][1]) > 5.0:
                         continue
                         
-                    # 若圖 A 右側找到柱子，且距離右邊界大於 33.3 (相當於實體 100px)
-                    if resA["pdf_right"] is not None:
-                        distA = resA["b_max_x"] - resA["pdf_right"]
-                        # 圖 B 沒有左柱，或是左柱離圖 B 左邊緣很遠 (>33.3)
-                        b_left_missing = (resB["pdf_left"] is None) or ((resB["pdf_left"] - resB["b_min_x"]) > 33.3)
-                        
+                    rA = resA["pdf_right"]
+                    lB = resB["pdf_left"]
+
+                    # === 情況 1：兩邊各自偵測到柱線 → 取中點作為共享切線 ===
+                    if rA is not None and lB is not None:
+                        midpoint = (rA + lB) / 2.0
+                        old_A_right = cv_bboxes[i][2]
+                        old_B_left  = cv_bboxes[i+1][0]
+                        cv_bboxes[i][2]   = midpoint
+                        cv_bboxes[i+1][0] = midpoint
+                        msg = (f"[柱中點分妻] 圖塊 {i}/{i+1} 共用柱"
+                               f"(1r={rA:.1f}, 2l={lB:.1f}) → 中點={midpoint:.1f}\n"
+                               f"  > 圖塊 {i} 右側: {old_A_right*3:.1f}px → {midpoint*3:.1f}px\n"
+                               f"  > 圖塊 {i+1} 左側: {old_B_left*3:.1f}px → {midpoint*3:.1f}px\n")
+                        print(msg.strip())
+                        with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
+                            _f_heal.write(msg + "\n")
+
+                    # === 情況 2：只有 A 有右柱，B 缺左柱 → A 切線包住柱，B 從柱邊起算 ===
+                    elif rA is not None:
+                        distA = resA["b_max_x"] - rA
+                        b_left_missing = (lB is None) or ((lB - resB["b_min_x"]) > 33.3)
                         if distA > 33.3 and b_left_missing:
                             old_A_right = cv_bboxes[i][2]
-                            old_B_left = cv_bboxes[i+1][0]
-                            # A 偷了 B 的邊緣！將 A 的切線往右推 10 單位 (約實體 30px)，讓 A 完整包含柱子甚至一點點 B 的跨度
-                            # 同時 B 從柱線邊緣原點起算 (不推進)，創造 30px 的安全重疊區 (Overlap)
-                            cv_bboxes[i][2] = resA["pdf_right"] + 10.0
-                            cv_bboxes[i+1][0] = resA["pdf_right"]
-                            
-                            move_A = cv_bboxes[i][2] - old_A_right
-                            move_B = cv_bboxes[i+1][0] - old_B_left
+                            old_B_left  = cv_bboxes[i+1][0]
+                            cv_bboxes[i][2]   = rA + 10.0
+                            cv_bboxes[i+1][0] = rA
+                            move_A  = cv_bboxes[i][2]   - old_A_right
+                            move_B  = cv_bboxes[i+1][0] - old_B_left
                             discard = cv_bboxes[i+1][0] - cv_bboxes[i][2]
-                            
-                            msg = f"[邊界竊取修復] 圖塊 {i} 偷了 {i+1} 的左邊柱線！\n" \
-                                  f"  > 圖塊 {i} 右側框線移動: {move_A*3:.1f}px (從實體像素 {old_A_right*3:.1f} 推至 {cv_bboxes[i][2]*3:.1f})\n" \
-                                  f"  > 圖塊 {i+1} 左側框線移動: {move_B*3:.1f}px (從實體像素 {old_B_left*3:.1f} 推至 {cv_bboxes[i+1][0]*3:.1f})\n" \
-                                  f"  > 造成重疊(負值)/丟棄(正值)區間寬度: {discard*3:.1f}px\n"
+                            msg = (f"[邊界竊取修復] 圖塊 {i} 偷了 {i+1} 的左邊柱線！\n"
+                                   f"  > 圖塊 {i} 右側: {old_A_right*3:.1f}px → {cv_bboxes[i][2]*3:.1f}px\n"
+                                   f"  > 圖塊 {i+1} 左側: {old_B_left*3:.1f}px → {cv_bboxes[i+1][0]*3:.1f}px\n"
+                                   f"  > 重疊(負)/丟棄(正): {discard*3:.1f}px\n")
                             print(msg.strip())
                             with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
                                 _f_heal.write(msg + "\n")
 
-                # 極端邊緣修剪
+                # 極端邊緣修剪 — 柱線 fallback 改用淡邊緣線最左/最右點
+                SIDE_OFFSET   = 13.3
+                FALLBACK_OFF  = 5.0
+                MIN_TRIM_GAIN = 33.3
+
                 if len(scan_results) > 0:
                     first = scan_results[0]
+
+                    # --- 最左圖塊 ---
                     if first["pdf_left"] is not None:
-                        # 收縮極限：不能切掉任何實體構件 (保護最左側的文字與線條)
-                        safe_left = min(first["pdf_left"] - 13.3, first["min_obj_x"] - 5.0)
-                        if (safe_left - first["b_min_x"]) > 33.3:
-                            old_left = cv_bboxes[0][0]
-                            cv_bboxes[0][0] = safe_left
-                            move = cv_bboxes[0][0] - old_left
-                            msg = f"[最左邊緣修剪] 圖塊 0 的左側有過多空白，向內收縮。\n  > 左邊框線移動: {move*3:.1f}px (在最左構件邊緣 {first['min_obj_x']*3:.1f}px 處停刀)\n"
-                            print(msg.strip())
-                            with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
-                                _f_heal.write(msg + "\n")
-                    
+                        safe_left = min(first["pdf_left"] - SIDE_OFFSET,
+                                        first["min_obj_x"] - FALLBACK_OFF)
+                    elif first["beam_edge_min_x"] is not None:
+                        safe_left = first["beam_edge_min_x"] - FALLBACK_OFF
+                        print(f"[最左 fallback] 無左柱線，改用淡邊緣線最左點 {safe_left:.1f}")
+                    else:
+                        safe_left = None
+
+                    if safe_left is not None and (safe_left - first["b_min_x"]) > MIN_TRIM_GAIN:
+                        old_left = cv_bboxes[0][0]
+                        cv_bboxes[0][0] = safe_left
+                        msg = (f"[最左邊緣修復] 圖塊 0 左側空白收縮\n"
+                               f"  > 左邊框線: {old_left*3:.1f}px → {safe_left*3:.1f}px\n")
+                        print(msg.strip())
+                        with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
+                            _f_heal.write(msg + "\n")
+
                     last = scan_results[-1]
+
+                    # --- 最右圖塊 ---
                     if last["pdf_right"] is not None:
-                        # 收縮極限：不能切掉任何實體構件 (保護最右側的文字與線條)
-                        safe_right = max(last["pdf_right"] + 13.3, last["max_obj_x"] + 5.0)
-                        if (last["b_max_x"] - safe_right) > 33.3:
-                            old_right = cv_bboxes[-1][2]
-                            cv_bboxes[-1][2] = safe_right
-                            move = old_right - cv_bboxes[-1][2]
-                            msg = f"[最右邊緣修剪] 圖塊 {len(scan_results)-1} 的右側有過多空白，向內收縮。\n  > 右邊框線移動: {move*3:.1f}px (在最右構件邊緣 {last['max_obj_x']*3:.1f}px 處停刀)\n"
-                            print(msg.strip())
-                            with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
-                                _f_heal.write(msg + "\n")
+                        safe_right = max(last["pdf_right"] + SIDE_OFFSET,
+                                         last["max_obj_x"] + FALLBACK_OFF)
+                    elif last["beam_edge_max_x"] is not None:
+                        safe_right = last["beam_edge_max_x"] + FALLBACK_OFF
+                        print(f"[最右 fallback] 無右柱線，改用淡邊緣線最右點 {safe_right:.1f}")
+                    else:
+                        safe_right = None
+
+                    if safe_right is not None and (last["b_max_x"] - safe_right) > MIN_TRIM_GAIN:
+                        old_right = cv_bboxes[-1][2]
+                        cv_bboxes[-1][2] = safe_right
+                        msg = (f"[最右邊緣修復] 圖塊 {len(scan_results)-1} 右側空白收縮\n"
+                               f"  > 右邊框線: {old_right*3:.1f}px → {safe_right*3:.1f}px\n")
+                        print(msg.strip())
+                        with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
+                            _f_heal.write(msg + "\n")
 
                 # Healing 後邊界合法性檢查：移除 min_x >= max_x 的無效 bbox
                 valid_bboxes = []
@@ -1295,6 +1388,18 @@ class TableExtractor:
                         with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
                             _f_heal.write(msg + "\n\n")
                 cv_bboxes = valid_bboxes
+                
+                # === Pass 2 Content Trim (最終精修級) ===
+                # 用最小的 padding 做最緊的 trim，上下左右全收
+                _thresh = cv_metrics.get("_thresh") if cv_metrics else None
+                if _thresh is not None:
+                    from core.vector_extractor import VectorExtractor
+                    VectorExtractor._content_trim_bboxes(
+                        cv_bboxes, _thresh,
+                        cv_metrics.get("_page_w", page.rect.width),
+                        cv_metrics.get("_page_h", page.rect.height),
+                        pad_x=30, pad_y=15, trim_bottom=True
+                    )
 
                 # === 二次分裂檢查 (Re-Split Check) ===
                 # 用 OCR 語意判斷：如果一張圖裡面偵測到 ≥2 組不同的梁編號，才觸發分裂
@@ -1500,8 +1605,15 @@ class TableExtractor:
                             )
                             self._detect_column_bounds(ctx)
                             
+                            pass1_v_columns = [l for l in ctx.lines if l.kind == "v_column"]
+                            for l in pass1_v_columns:
+                                l.kind = "v_column_pass1"
+                            pass1_h_beam_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
+                            for l in pass1_h_beam_edges:
+                                l.kind = "h_beam_edge_pass1"
+                                
                             # 儲存第一輪(Pass 1)算出的平均柱線寬度，傳遞給第二次擷取使用 (若為重試也持續繼承)
-                            v_strokes = [l.w for l in ctx.lines if l.kind == "v_column"]
+                            v_strokes = [l.w for l in ctx.lines if l.kind in ("v_column", "v_column_pass1")]
                             if v_strokes:
                                 ctx.ref_col_stroke = sum(v_strokes) / len(v_strokes)
                             
@@ -1522,6 +1634,8 @@ class TableExtractor:
                             # === Pass 2: 純淨小圖精準偵測 ===
                             ctx.clear_lines()
                             self._detect_column_bounds(ctx)
+                            ctx.lines.extend(pass1_v_columns)
+                            ctx.lines.extend(pass1_h_beam_edges)
                             
                             # === 多域切割與多重曝光 OCR (Sub-cropping & Multi-Exposure) ===
                             self._run_sub_crops_ocr(ctx)
@@ -1919,6 +2033,38 @@ class TableExtractor:
                             
                             print(f"[Gemini Vision] 片段 {index} 產出：{b.get('beam_id', 'Unknown')}")
                         
+                        # 若此 crop 沒有辨識出任何梁，仍然產出一個攜帶 debug 資訊的 placeholder，
+                        # 確保 debug_full_pdf.png 能畫出此 crop 的偵測線與橘色虛線框。
+                        if len(crops_beams) == 0:
+                            debug_lines_data = []
+                            for ln in ctx.lines:
+                                debug_lines_data.append({
+                                    "kind": ln.kind,
+                                    "status": ln.status.value,
+                                    "reject_reason": ln.reject_reason,
+                                    "abs_x": round(ln.abs_x, 2),
+                                    "abs_y": round(ln.abs_y, 2),
+                                    "abs_w": round(ln.abs_w, 2),
+                                    "abs_h": round(ln.abs_h, 2),
+                                    "abs_lx": round(ln.abs_lx, 2),
+                                    "abs_rx": round(ln.abs_rx, 2),
+                                    "abs_free_y": round(ln.abs_free_y, 2),
+                                    "score_text": ln.score_text
+                                })
+                            crops_beams.append({
+                                "beam_id": f"(empty_crop_{index})",
+                                "_is_debug_placeholder": True,
+                                "crop_index": index,
+                                "_crop_file": f"crop_{index}.png",
+                                "_debug_lines": debug_lines_data,
+                                "_final_bbox": {
+                                    "abs_x0": round(ctx.to_pdf_x(0), 2),
+                                    "abs_y0": round(ctx.to_pdf_y(0), 2),
+                                    "abs_x1": round(ctx.to_pdf_x(ctx.img.width), 2),
+                                    "abs_y1": round(ctx.to_pdf_y(ctx.img.height), 2)
+                                }
+                            })
+                        
                         if index <= parent_total:
                             completed_parents += 1
                         else:
@@ -1956,6 +2102,19 @@ class TableExtractor:
                     debug_img = Image.open(io.BytesIO(debug_pix.tobytes("png")))
                     draw = ImageDraw.Draw(debug_img)
                     
+                    # 繪製全域 Pass 1 (在無橘框處也能顯示)
+                    for ln in global_pass1_lines:
+                        x = ln["abs_x"] * 3.0
+                        y = ln["abs_y"] * 3.0
+                        w = ln["abs_w"] * 3.0
+                        h = ln["abs_h"] * 3.0
+                        kind = ln["kind"]
+                        if kind == "h_beam_edge_pass1":
+                            draw.line([(x, y), (x + w, y)], fill=(173, 216, 230), width=4)
+                        elif kind == "v_column_pass1":
+                            draw.line([(x, y), (x, y + h)], fill=(173, 216, 230), width=4)
+                            draw.text((x + 5, y + 10), f"({int(ln['abs_x'])},{int(ln['abs_y'])})", fill=(173, 216, 230))
+                    
                     for b in final_beams:
                         if "_debug_lines" in b:
                             for ln in b["_debug_lines"]:
@@ -1972,6 +2131,11 @@ class TableExtractor:
                                     score_text = ln.get("score_text", "")
                                     if score_text:
                                         draw.text((x + w/10, y - 25), score_text, fill=(255, 105, 180))
+                                elif kind == "h_beam_edge_pass1":
+                                    draw.line([(x, y), (x + w, y)], fill=(173, 216, 230), width=4)
+                                    score_text = ln.get("score_text", "")
+                                    if score_text:
+                                        draw.text((x + w/10, y - 25), score_text, fill=(173, 216, 230))
                                 elif kind == "h_rejected":
                                     draw.line([(x, y), (x + w, y)], fill=(255, 0, 0), width=2)
                                     score_text = ln.get("score_text", "")
@@ -1979,8 +2143,12 @@ class TableExtractor:
                                         draw.text((x + w/10, y - 20), score_text, fill=(255, 0, 0))
                                 elif kind == "h_dimension":
                                     draw.line([(x, y), (x + w, y)], fill=(255, 255, 0), width=3)
+                                elif kind == "v_column_pass1":
+                                    draw.line([(x, y), (x, y + h)], fill=(173, 216, 230), width=4)
+                                    draw.text((x + 5, y + 10), f"({int(ln.get('abs_x',0))},{int(ln.get('abs_y',0))})", fill=(173, 216, 230))
                                 elif kind == "v_column":
-                                    draw.line([(x, y), (x, y + h)], fill=(0, 255, 0), width=4)
+                                    draw.line([(x, y), (x, y + h)], fill=(144, 238, 144), width=4)
+                                    draw.text((x + 5, y + 25), f"({int(ln.get('abs_x',0))},{int(ln.get('abs_y',0))})", fill=(144, 238, 144))
                                 else:
                                     if status == "幾何不符": color = (128, 128, 128)
                                     elif status == "線寬不符": color = (128, 0, 128)
@@ -2034,8 +2202,17 @@ class TableExtractor:
                 except Exception as e:
                     print(f"[Debug Error] 繪製全域除錯原圖失敗: {e}")
 
+                # 過濾 debug placeholder 與內部繪圖專用欄位，只輸出真實梁資料
+                _DEBUG_ONLY_KEYS = {"_debug_lines", "_final_bbox", "_is_debug_placeholder"}
+                output_beams = []
+                for b in final_beams:
+                    if b.get("_is_debug_placeholder"):
+                        continue
+                    clean_b = {k: v for k, v in b.items() if k not in _DEBUG_ONLY_KEYS}
+                    output_beams.append(clean_b)
+                
                 return json.dumps({
-                    "beams": final_beams,
+                    "beams": output_beams,
                     "metrics": {
                         "llm_calls": llm_call_count,
                         "prompt_tokens": prompt_tokens,

@@ -6,6 +6,10 @@ from core.vector_extractor import VectorExtractor
 from core.table_extractor import TableExtractor
 from core.task_manager import update_task_progress, complete_task, fail_task
 from core.normalizer import normalize_dict
+from core.debug_logger import debug_print
+
+print = debug_print
+
 
 def _find_closest_beam_id_downwards(anchor_rect: list, texts_data: list) -> str:
     """依據給定框，由梁中心往下看，找回漏掉的梁編號"""
