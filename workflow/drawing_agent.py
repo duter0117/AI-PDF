@@ -65,7 +65,16 @@ async def extract_vectors_node(state: GraphState):
     def _run_cv_heavy():
         extractor = VectorExtractor(state["pdf_bytes"])
         data = extractor.extract_page_data(state["page_num"])
-        cv_bboxes, cv_metrics = extractor.extract_opencv_bboxes(state["page_num"], state.get("cv_params", {}))
+        
+        def local_progress(msg: str, pct: int):
+            if state.get("task_id"):
+                update_task_progress(state["task_id"], pct, msg)
+                
+        cv_bboxes, cv_metrics = extractor.extract_opencv_bboxes(
+            state["page_num"], 
+            state.get("cv_params", {}),
+            progress_cb=local_progress
+        )
         return extractor, data, cv_bboxes, cv_metrics
 
     extractor, data, cv_bboxes, cv_metrics = await asyncio.to_thread(_run_cv_heavy)

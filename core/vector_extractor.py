@@ -170,7 +170,7 @@ class VectorExtractor:
                 drops.append(bbox)
         return keep, drops
 
-    def extract_opencv_bboxes(self, page_num: int = 0, cv_params: dict = None) -> tuple[list, dict]:
+    def extract_opencv_bboxes(self, page_num: int = 0, cv_params: dict = None, progress_cb=None) -> tuple[list, dict]:
         """
         Phase 3: OpenCV 形態學尋邊 (Morphological Bounding)
         接收動態 cv_params (dilation_iterations, min_area, padding_bottom) 取代寫死的魔法數字。
@@ -188,6 +188,7 @@ class VectorExtractor:
         page = self.doc[page_num]
         
         # 放大渲染做二值化處理
+        if progress_cb: progress_cb("[Phase 1.1] 正在將 PDF 轉換為超高解析度快取影像...", 15)
         max_dim = max(page.rect.width, page.rect.height)
         scale_factor = 4.0
         if max_dim * scale_factor > 8000.0:
@@ -208,6 +209,7 @@ class VectorExtractor:
         h_len = int(pix.width * hough_threshold_pct)
         v_len = int(pix.height * hough_threshold_pct)
         
+        if progress_cb: progress_cb("[Phase 1.2] 影像二值化與 Hough 幾何骨架掃描中...", 25)
         # 找尋影像中所有的極長直線
         min_search_length = min(h_len, v_len)
         lines = cv2.HoughLinesP(thresh, 1, np.pi/180, threshold=min_search_length//2, minLineLength=min_search_length, maxLineGap=gap_limit)
@@ -238,6 +240,7 @@ class VectorExtractor:
         if cv_params.get("debug_mode", False):
             img_island.save(os.path.join(output_dir, f"debug_islands_page_{page_num}.png"))
         
+        if progress_cb: progress_cb("[Phase 1.3] 執行膨脹運算與微觀結構輪廓偵測...", 35)
         contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
         total_contours = len(contours)
@@ -247,7 +250,9 @@ class VectorExtractor:
         # 記錄要存檔除錯的跌落圖塊
         dropped_for_save = []
         
-        for c in contours:
+        for idx_c, c in enumerate(contours):
+            if progress_cb and idx_c > 0 and idx_c % 500 == 0:
+                progress_cb(f"[Phase 1.4] 正在分析第 {idx_c}/{total_contours} 個可能範圍...", 35 + int(10 * idx_c / total_contours))
             x, y, w, h = cv2.boundingRect(c)
             area = w * h
             

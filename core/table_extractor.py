@@ -52,7 +52,8 @@ class TableExtractor:
         self._ocr_available = None # None = 未偵測, True/False = 已偵測
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+            # 修正 Google 最新的模型命名，沒有 2.5 lite。
+            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
             self.model = genai.GenerativeModel(model_name)
 
     @staticmethod
