@@ -83,11 +83,12 @@ async def run_extraction_workflow(task_id: str, pdf_bytes: bytes, page_num: int,
                     if beam_id:
                         page.insert_text((r.x0, r.y0 - 5), str(beam_id), fontsize=10, color=(0, 0, 1))
 
-            pix = page.get_pixmap(dpi=150)
-            img_data = pix.tobytes("png")
+            # 將 DPI 降至 72 以避免伺服器記憶體不足 (OOM) 或過久等待
+            pix = page.get_pixmap(dpi=72)
+            img_data = pix.tobytes("jpeg") # 改用 jpeg 壓縮
             global_image_b64 = base64.b64encode(img_data).decode("utf-8")
-            global_image = f"data:image/png;base64,{global_image_b64}"
-        except Exception as img_err:
+            global_image = f"data:image/jpeg;base64,{global_image_b64}"
+        except BaseException as img_err:
             print(f"Failed to generate global image for background task: {img_err}")
 
         # 計算指標
