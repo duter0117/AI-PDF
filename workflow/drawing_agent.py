@@ -60,25 +60,15 @@ async def extract_vectors_node(state: GraphState):
         update_task_progress(tid, 10, "[Phase 1] PyMuPDF 解析啟動：提取底層幾何座標...")
         
     print("[Agent] 正在提取 PDF 向量幾何，並執行 OpenCV 自適應尋邊...")
-    import asyncio
+    extractor = VectorExtractor(state["pdf_bytes"])
+    data = extractor.extract_page_data(state["page_num"])
     
-    def _run_cv_heavy():
-        extractor = VectorExtractor(state["pdf_bytes"])
-        data = extractor.extract_page_data(state["page_num"])
+    if tid:
+        update_task_progress(tid, 30, f"[Phase 1] OpenCV 降噪裁切執行中：已為大圖分析出潛力區塊...")
         
-        def local_progress(msg: str, pct: int):
-            if state.get("task_id"):
-                update_task_progress(state["task_id"], pct, msg)
-                
-        cv_bboxes, cv_metrics = extractor.extract_opencv_bboxes(
-            state["page_num"], 
-            state.get("cv_params", {}),
-            progress_cb=local_progress
-        )
-        return extractor, data, cv_bboxes, cv_metrics
-
-    extractor, data, cv_bboxes, cv_metrics = await asyncio.to_thread(_run_cv_heavy)
-    
+    # 執行 Phase 3 的 OpenCV 形狀辨識拆框演算法
+    cv_params = state.get("cv_params", {})
+    cv_bboxes, cv_metrics = extractor.extract_opencv_bboxes(state["page_num"], cv_params)
     data["cv_bboxes"] = cv_bboxes
     data["cv_metrics"] = cv_metrics
     
@@ -127,9 +117,6 @@ async def extract_tables_node(state: GraphState):
     print("[Agent] 正在組裝多模態輸入，呼叫 Gemini Vision 解構 JSON...")
     extractor = TableExtractor()
     voting_rounds = int(state.get("cv_params", {}).get("voting_rounds", 1))
-    output_dir = state.get("cv_params", {}).get("output_dir", "crops")
-    debug_mode = state.get("cv_params", {}).get("debug_mode", False)
-    
     # 將 OpenCV 框傳給 LLM 進行精準片段裁切閱讀
     json_str = await extractor.extract_tables(
         state["pdf_bytes"], 
@@ -137,9 +124,7 @@ async def extract_tables_node(state: GraphState):
         cv_bboxes, 
         progress_cb=progress_callback,
         cv_metrics=cv_metrics,
-        voting_rounds=voting_rounds,
-        output_dir=output_dir,
-        debug_mode=debug_mode
+        voting_rounds=voting_rounds
     )
     return {"table_markdown": json_str}
 
@@ -320,8 +305,7 @@ async def llm_reasoning_node(state: GraphState):
     # === 匯出重新命名的純淨圖塊 ===
     import os
     import shutil
-    output_dir = state.get("cv_params", {}).get("output_dir", "crops")
-    named_dir = os.path.join(output_dir, "named_beams")
+    named_dir = "crops/named_beams"
     os.makedirs(named_dir, exist_ok=True)
     
     # 在複製前先清空舊有的資料
@@ -335,7 +319,7 @@ async def llm_reasoning_node(state: GraphState):
         b_id = beam.get("beam_id", "")
         c_idx = beam.get("crop_index")
         if b_id and c_idx is not None and isinstance(c_idx, int):
-            src_path = os.path.join(output_dir, f"crop_{c_idx}.png")
+            src_path = f"crops/crop_{c_idx}.png"
             if os.path.exists(src_path):
                 # 過濾非法字元
                 safe_id = "".join([c if c.isalnum() or c in ['-', '_', ' '] else '_' for c in b_id]).strip()

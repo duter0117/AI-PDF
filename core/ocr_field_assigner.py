@@ -202,7 +202,7 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
         if conf < HIGH_CONF_THRESHOLD:
             contested_positions.add(pos)
     if contested_positions:
-        pass # print(f"  [Pre-scan] 以下方位存在低信心項目，將全數送 LLM: {contested_positions}")
+        print(f"  [Pre-scan] 以下方位存在低信心項目，將全數送 LLM: {contested_positions}")
     
     for item in ocr_items:
         text = item["text"].strip()
@@ -359,9 +359,9 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
     beam["self_confidence"] = int((high_conf_count / max(total_items, 1)) * 100)
     
     # 輸出 debug log
-    # print(f"[規則引擎] 共 {total_items} 筆 OCR → {high_conf_count} 筆免 LLM 直填, {len(low_conf_items)} 筆交給 LLM 確認")
-    # for a in assignments:
-    #     print(f"  {a}")
+    print(f"[規則引擎] 共 {total_items} 筆 OCR → {high_conf_count} 筆免 LLM 直填, {len(low_conf_items)} 筆交給 LLM 確認")
+    for a in assignments:
+        print(f"  {a}")
     
     return beam, low_conf_items
 

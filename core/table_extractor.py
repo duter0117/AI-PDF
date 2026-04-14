@@ -52,8 +52,7 @@ class TableExtractor:
         self._ocr_available = None # None = 未偵測, True/False = 已偵測
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            # 修正 Google 最新的模型命名，沒有 2.5 lite。
-            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
             self.model = genai.GenerativeModel(model_name)
 
     @staticmethod
@@ -441,15 +440,15 @@ class TableExtractor:
                         should_replace = True
                     
                     if should_replace:
-                        pass # print(f"  [Sub-Crop] 取代雜訊: '{f_item['text']}'({f_item['conf']:.2f}) -> '{m_item['text']}'({m_item['conf']:.2f})")
+                        print(f"  [Sub-Crop] 取代雜訊: '{f_item['text']}'({f_item['conf']:.2f}) -> '{m_item['text']}'({m_item['conf']:.2f})")
                         final_items[f_idx] = m_item
                     else:
                         reason = f"IoU={iou:.2f}/IoM={iom:.2f}"
-                        pass # print(f"  [Sub-Crop] 碎片剔除({reason}): '{m_item['text']}' ∈ '{f_item['text']}'")
+                        print(f"  [Sub-Crop] 碎片剔除({reason}): '{m_item['text']}' ∈ '{f_item['text']}'")
                     break
             
             if not matched:
-                pass # print(f"  [Sub-Crop] 發現未見文字: '{m_item['text']}' ({m_item['conf']:.2f})")
+                print(f"  [Sub-Crop] 發現未見文字: '{m_item['text']}' ({m_item['conf']:.2f})")
                 final_items.append(m_item)
         
         # === 同源去重 (Intra-pass Dedup) ===
@@ -476,16 +475,16 @@ class TableExtractor:
                     rank_j = FORMAT_RANK.get(fmt_j, 0)
                     if rank_i > rank_j:
                         dedup_remove.add(j)
-                        pass # print(f"  [Intra-Dedup] 剔除碎片 '{final_items[j]['text']}' (被 '{final_items[i]['text']}' 包含, IoM={iom:.2f})")
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[j]['text']}' (被 '{final_items[i]['text']}' 包含, IoM={iom:.2f})")
                     elif rank_j > rank_i:
                         dedup_remove.add(i)
-                        pass # print(f"  [Intra-Dedup] 剔除碎片 '{final_items[i]['text']}' (被 '{final_items[j]['text']}' 包含, IoM={iom:.2f})")
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[i]['text']}' (被 '{final_items[j]['text']}' 包含, IoM={iom:.2f})")
                     elif len(final_items[i]["text"]) >= len(final_items[j]["text"]):
                         dedup_remove.add(j)
-                        pass # print(f"  [Intra-Dedup] 剔除碎片 '{final_items[j]['text']}' (被 '{final_items[i]['text']}' 包含, IoM={iom:.2f})")
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[j]['text']}' (被 '{final_items[i]['text']}' 包含, IoM={iom:.2f})")
                     else:
                         dedup_remove.add(i)
-                        pass # print(f"  [Intra-Dedup] 剔除碎片 '{final_items[i]['text']}' (被 '{final_items[j]['text']}' 包含, IoM={iom:.2f})")
+                        print(f"  [Intra-Dedup] 剔除碎片 '{final_items[i]['text']}' (被 '{final_items[j]['text']}' 包含, IoM={iom:.2f})")
         
         if dedup_remove:
             final_items = [item for idx, item in enumerate(final_items) if idx not in dedup_remove]
@@ -495,40 +494,44 @@ class TableExtractor:
             txt = item["text"].strip()
             if re.match(r'^\d{1,3}$', txt) and classify_text(txt) in (FormatType.LAP_LENGTH, FormatType.UNKNOWN):
                 item_box = (item["min_x"], item["min_y"], item["max_x"], item["max_y"])
-                pass # print(f"  [DEBUG-11] 存活純數字 '{txt}' bbox={item_box}")
+                print(f"  [DEBUG-11] 存活純數字 '{txt}' bbox={item_box}")
                 for other in final_items:
                     if other is item: continue
                     o_fmt = classify_text(other["text"].strip())
                     if o_fmt == FormatType.REBAR:
                         o_box = (other["min_x"], other["min_y"], other["max_x"], other["max_y"])
                         d_iou, d_iom = compute_overlap(item_box, o_box)
-                        pass # print(f"    vs REBAR '{other['text']}' bbox={o_box} → IoU={d_iou:.3f}, IoM={d_iom:.3f}")
+                        print(f"    vs REBAR '{other['text']}' bbox={o_box} → IoU={d_iou:.3f}, IoM={d_iom:.3f}")
         
-        # === 疑似殘片降信心 (Text-Based Confidence Demotion) ===
-        # 如果一個短數字（1~3位）是同張 crop 裡某條 REBAR 或 STIRRUP 的子字串，
-        # 它極可能是 OCR 的部分辨識殘片 (如 "14-#11" 只讀到 "11", "#5@12" 只讀到 "12")。
-        # 不剔除 (因為它代表「這裡還有資料」的珍貴線索)，
+        # === 近距離疑似殘片降信心 (Proximity Confidence Demotion) ===
+        # 如果一個短數字出現在 REBAR 密集區域且字面上是鄰近 REBAR 的子字串，
+        # 它極可能是 OCR 對某排鋼筋的部分辨識結果 (如 "14-#11" 只讀到 "11")。
+        # 不剔除 (因為它代表「這裡還有一排鋼筋」的珍貴線索)，
         # 而是降低信心值，避免它被自動歸類為搭接長度，讓 LLM 從圖面做最終判定。
-        # 
-        # ⚠️ 純文字比對 + 結構域值域約束 — 解析度無關 (Resolution-Independent)
-        #    只對 ≤ 30 的短數字降信心 (鋼筋號數 #3~#18, 箍筋間距 @7~@30)
-        #    > 30 的數字可能是真搭接長度 (如 65, 110, 240)，不降信心
         for i, item in enumerate(final_items):
             txt = item["text"].strip()
             fmt = classify_text(txt)
             if fmt in (FormatType.LAP_LENGTH, FormatType.UNKNOWN) and re.match(r'^\d{1,3}$', txt):
-                val = int(txt)
-                if val > 30:
-                    continue  # > 30 的數字可能是真搭接長度，不降信心
+                item_cx = item["cx"]
+                item_cy = item["cy"]
+                item_h = item["max_y"] - item["min_y"]
+                
                 for j, other in enumerate(final_items):
                     if i == j: continue
                     other_fmt = classify_text(other["text"].strip())
-                    if other_fmt not in (FormatType.REBAR, FormatType.STIRRUP): continue
-                    other_raw = other["text"].strip().replace(" ", "")
-                    if txt in other_raw:
-                        item["conf"] = 0.3  # 強制降低信心，送 LLM 覆核
-                        item["_rebar_proximity"] = True  # 標記：疑似鋼筋/箍筋殘片
-                        break
+                    if other_fmt != FormatType.REBAR: continue
+                    x_overlap = other["min_x"] <= item_cx <= other["max_x"]
+                    other_h = other["max_y"] - other["min_y"]
+                    y_dist = abs(item_cy - (other["min_y"] + other["max_y"]) / 2)
+                    y_close = y_dist < max(item_h, other_h) * 2
+                    
+                    if x_overlap and y_close:
+                        other_raw = other["text"].strip().replace(" ", "")
+                        if txt in other_raw:
+                            item["conf"] = 0.3  # 強制降低信心，送 LLM 覆核
+                            item["_rebar_proximity"] = True  # 標記：疑似鋼筋殘片
+                            print(f"  [Proximity-Demote] '{txt}' 疑似鋼筋部分辨識 (靠近 '{other['text']}'), 信心降至 30%")
+                            break
                 
         ctx.ocr_items = final_items
 
@@ -555,8 +558,10 @@ class TableExtractor:
         _, binary = cv2.threshold(cv_img, 200, 255, cv2.THRESH_BINARY_INV)
         
         # 1. 水平主梁結構
-        # 縮小 kernel 以偵測極短的懸臂梁 (從 100 降至 40)
-        horiz_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+        # 縮小 kernel 以偵測極短的懸臂梁與重要連接截斷 (先試探底線降至 10)
+        # 由於我們已經在上面透過 cv2.rectangle 把 OCR 文字白化了，
+        # 所以盡可能下推底線來挽救極短懸臂梁或短跨。
+        horiz_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 1))
         horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horiz_kernel)
         h_contours, _ = cv2.findContours(horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -581,8 +586,40 @@ class TableExtractor:
                 for gi, (gy, gw, gh, gc, gx) in enumerate(new_groups):
                     if abs(seg_y - gy) <= 4:
                         # 檢查 X 軸是否足夠靠近
+                        # 核心邏輯：預設只容忍 30 像素斷層 (防誤接)。
+                        # 但如果斷層 (gap) 的所在位置，正是我們剛才「塗白」OCR 文字的範圍，
+                        # 那就代表這條線是被我們自己挖斷的！我們將這區的容忍度特例放寬到 120 像素。
                         gap = max(0, max(gx, seg_x) - min(gx + gw, seg_x + seg_w))
+                        can_merge = False
+                        
                         if gap < 30:
+                            can_merge = True
+                        else:
+                            gap_left = min(gx + gw, seg_x + seg_w)
+                            gap_right = max(gx, seg_x)
+                            
+                            is_ocr_gap = False
+                            for item in ocr_items:
+                                # OCR 塗白框範圍 (我們當初塗白是擴張了 2 像素，這裡容忍度放寬到 5)
+                                ox1 = item["min_x"] - 5
+                                ox2 = item["max_x"] + 5
+                                oy1 = item["min_y"] - 5
+                                oy2 = item["max_y"] + 5
+                                
+                                # 檢測這條碎片線的高度 (gy) 是否有穿過這個文字框
+                                if oy1 <= gy <= oy2:
+                                    # 檢測這個斷層 (gap) 是否與文字框有水平重疊
+                                    if gap_left < ox2 and gap_right > ox1:
+                                        # 動態容忍度：專屬這塊挖空區域的寬度 (ox2 - ox1) + 原有的物理容忍度 30
+                                        max_allowed_gap = (ox2 - ox1) + 30
+                                        if gap <= max_allowed_gap:
+                                            is_ocr_gap = True
+                                            break
+                                        
+                            if is_ocr_gap:
+                                can_merge = True
+                                
+                        if can_merge:
                             new_x = min(gx, seg_x)
                             new_end = max(gx + gw, seg_x + seg_w)
                             new_w = new_end - new_x
@@ -775,13 +812,73 @@ class TableExtractor:
             beam_stroke = ctx.beam_stroke
             
             # 2. 垂直線
-            vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
+            # 縮小垂直 kernel (從 40 降至 10) 以防短引線被刪除
+            vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 10))
             vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vert_kernel)
             v_contours, _ = cv2.findContours(vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            detected_x_cols = []
+            # 將同 X 座標 (±4px) 的垂直碎片合併
+            v_segments = []
             for cnt in v_contours:
                 x, y, w, h = cv2.boundingRect(cnt)
+                v_segments.append((x, w, h, y))
+            # 先以 X 排序，再以 Y 排序
+            v_segments.sort(key=lambda s: (s[0], s[3]))
+            
+            x_groups = [(seg_x, seg_w, seg_h, 1, seg_y) for seg_x, seg_w, seg_h, seg_y in v_segments]
+            changed = True
+            while changed:
+                changed = False
+                new_groups = []
+                for x_item in x_groups:
+                    seg_x, seg_w, seg_h, seg_c, seg_y = x_item
+                    merged = False
+                    for gi, (gx, gw, gh, gc, gy) in enumerate(new_groups):
+                        if abs(seg_x - gx) <= 4:
+                            gap = max(0, max(gy, seg_y) - min(gy + gh, seg_y + seg_h))
+                            can_merge = False
+                            
+                            if gap < 30:
+                                can_merge = True
+                            else:
+                                gap_top_val = min(gy + gh, seg_y + seg_h)
+                                gap_bottom_val = max(gy, seg_y)
+                                
+                                is_ocr_gap = False
+                                for item in ocr_items:
+                                    ox1 = item["min_x"] - 5
+                                    ox2 = item["max_x"] + 5
+                                    oy1 = item["min_y"] - 5
+                                    oy2 = item["max_y"] + 5
+                                    
+                                    if ox1 <= gx <= ox2:
+                                        if gap_top_val < oy2 and gap_bottom_val > oy1:
+                                            # 動態容忍度：文字框挖空高度 (oy2 - oy1) + 容忍 30
+                                            max_allowed_gap = (oy2 - oy1) + 30
+                                            if gap <= max_allowed_gap:
+                                                is_ocr_gap = True
+                                                break
+                                                
+                                if is_ocr_gap:
+                                    can_merge = True
+                                    
+                            if can_merge:
+                                new_x = min(gx, seg_x)
+                                new_w = max(gx + gw, seg_x + seg_w) - new_x
+                                new_y = min(gy, seg_y)
+                                new_end = max(gy + gh, seg_y + seg_h)
+                                new_h = new_end - new_y
+                                new_groups[gi] = (new_x, new_w, new_h, gc + seg_c, new_y)
+                                merged = True
+                                changed = True
+                                break
+                    if not merged:
+                        new_groups.append(x_item)
+                x_groups = new_groups
+            
+            detected_x_cols = []
+            for gx, w, h, gc, y in x_groups:
+                x = gx
                 tolerance_w = max(1.5, beam_stroke * 0.25)
                 if abs(w - beam_stroke) > tolerance_w:
                     ctx.lines.append(DetectedLine(
@@ -928,7 +1025,7 @@ class TableExtractor:
     # Debug 七彩診斷繪圖 (從 CropContext 讀取所有偵測物件)
     # ================================================================
     @staticmethod
-    def _draw_debug(ctx, index: int, output_dir: str = "crops", debug_mode: bool = False):
+    def _draw_debug(ctx, index: int):
         """在 ctx.img 上繪製完整的七彩診斷光譜，並存檔到 crops/debug_col/。
         同時回傳一份只畫紅線的 Gemini 用乾淨圖片。
         """
@@ -1011,10 +1108,8 @@ class TableExtractor:
             draw.text((35, y - 10), txt, fill=(255, 255, 255))
         
         # 存檔
-        if debug_mode:
-            os.makedirs(os.path.join(output_dir, "debug_col"), exist_ok=True)
-        if debug_mode:
-            img_debug.save(os.path.join(output_dir, "debug_col", f"crop_{index}_debug.png"))
+        os.makedirs("crops/debug_col", exist_ok=True)
+        img_debug.save(f"crops/debug_col/crop_{index}_debug.png")
         
         red_line_hint = ""
         if drawn_lines:
@@ -1120,8 +1215,7 @@ class TableExtractor:
     # ================================================================
     async def extract_tables(self, pdf_bytes: bytes, page_num: int = 0,
                              cv_bboxes: list = None, progress_cb=None,
-                             cv_metrics: dict = None, voting_rounds: int = 1,
-                             output_dir: str = "crops", debug_mode: bool = False) -> str:
+                             cv_metrics: dict = None, voting_rounds: int = 1) -> str:
         """
         強制大腦輸出純 JSON 字串，完全杜絕任何問候語或前文後理。
         Phase 5: 單圖單發 (Single-Focus Inference) 解決多模態眼花問題。
@@ -1139,11 +1233,7 @@ class TableExtractor:
             page = doc[page_num]
             
             if cv_bboxes and len(cv_bboxes) > 0:
-                max_dim = max(page.rect.width, page.rect.height)
-                scale_factor = 3.0
-                if max_dim * scale_factor > 8000.0:
-                    scale_factor = max(1.5, 8000.0 / max_dim)
-                mat = fitz.Matrix(scale_factor, scale_factor)
+                mat = fitz.Matrix(3.0, 3.0)
                 # 已升級為付費帳號：4,000 RPM 上限
                 sem = asyncio.Semaphore(50)
                 final_beams = []
@@ -1172,8 +1262,8 @@ class TableExtractor:
                 import os
                 import shutil
                 
-                pass1_dir = os.path.join(output_dir, "rough_cut_pass1")
-                pass2_dir = os.path.join(output_dir, "precise_cut_pass2")
+                pass1_dir = "crops/rough_cut_pass1"
+                pass2_dir = "crops/precise_cut_pass2"
                 os.makedirs(pass1_dir, exist_ok=True)
                 os.makedirs(pass2_dir, exist_ok=True)
                 
@@ -1318,19 +1408,37 @@ class TableExtractor:
                     img_enh = self._enhance_image(img)
                     _, ocr_items_rescan = self._run_ocr(img_enh)
                     
-                    # 找出所有梁編號及其 X 中心座標
                     beam_ids = []
                     for item in ocr_items_rescan:
                         if TableExtractor._is_beam_id(item["text"]):
-                            beam_ids.append({"text": item["text"], "cx": item["cx"]})
+                            beam_ids.append({
+                                "text": item["text"], "cx": item["cx"],
+                                "min_x": item["min_x"], "max_x": item["max_x"],
+                                "min_y": item["min_y"], "max_y": item["max_y"]
+                            })
                     
-                    # 去重：同名梁編號只留一個 (可能 OCR 重複偵測)
-                    seen_names = set()
+                    # 去重：同名字串若靠得很近 (IoU 或 IoM 大) 才視為 OCR 疊影刪除。
+                    # 若同名但隔很遠，那就代表工程師標註了兩段同名但獨立的梁，必須保留以觸發切割！
                     unique_beams = []
                     for b in sorted(beam_ids, key=lambda x: x["cx"]):
-                        name = re.sub(r'[\s\-_]', '', b["text"])
-                        if name not in seen_names:
-                            seen_names.add(name)
+                        is_dup = False
+                        for ub in unique_beams:
+                            if re.sub(r'[\s\-_]', '', ub["text"]) == re.sub(r'[\s\-_]', '', b["text"]):
+                                # 只有當名字一樣，且產生嚴重幾何重疊時，才視為疊影
+                                inter_x0 = max(b["min_x"], ub["min_x"])
+                                inter_y0 = max(b["min_y"], ub["min_y"])
+                                inter_x1 = min(b["max_x"], ub["max_x"])
+                                inter_y1 = min(b["max_y"], ub["max_y"])
+                                inter = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
+                                if inter > 0:
+                                    area_a = (b["max_x"] - b["min_x"]) * (b["max_y"] - b["min_y"])
+                                    area_b = (ub["max_x"] - ub["min_x"]) * (ub["max_y"] - ub["min_y"])
+                                    iou = inter / (area_a + area_b - inter + 1e-6)
+                                    iom = inter / (min(area_a, area_b) + 1e-6)
+                                    if iou > 0.6 or iom > 0.85:
+                                        is_dup = True
+                                        break
+                        if not is_dup:
                             unique_beams.append(b)
                     
                     if len(unique_beams) >= 2:
@@ -1471,8 +1579,7 @@ class TableExtractor:
                             img = Image.open(io.BytesIO(pix.tobytes("png")))
                             
                             file_suffix = f"_retry{retry_count}" if retry_count > 0 else ""
-                            if debug_mode:
-                                os.makedirs(output_dir, exist_ok=True)
+                            os.makedirs("crops", exist_ok=True)
                             img.save(f"crops/crop_{index}{file_suffix}.png")
                             
                             # === 影像增強 (放入背景執行緒避免卡住 asyncio) ===
@@ -1524,6 +1631,23 @@ class TableExtractor:
                                 ctx.ocr_hint = ocr_hint_pass2
                                 ctx.ocr_items = new_ocr_items
                             
+                            # 備份 Pass 1 線條，供全局除錯繪圖使用
+                            pass1_debug_lines = []
+                            for ln in ctx.lines:
+                                pass1_debug_lines.append({
+                                    "kind": ln.kind,
+                                    "status": ln.status.value,
+                                    "reject_reason": ln.reject_reason,
+                                    "abs_x": round(ln.abs_x, 2),
+                                    "abs_y": round(ln.abs_y, 2),
+                                    "abs_w": round(ln.abs_w, 2),
+                                    "abs_h": round(ln.abs_h, 2),
+                                    "abs_lx": round(ln.abs_lx, 2),
+                                    "abs_rx": round(ln.abs_rx, 2),
+                                    "abs_free_y": round(ln.abs_free_y, 2),
+                                    "score_text": ln.score_text
+                                })
+                                
                             # === Pass 2: 純淨小圖精準偵測 ===
                             ctx.clear_lines()
                             self._detect_column_bounds(ctx)
@@ -1536,14 +1660,13 @@ class TableExtractor:
                             ctx.ocr_hint = ocr_hint_refreshed
                             
                             # 儲存最後一次 OCR 的結果到 txt
-                            if debug_mode:
-                                os.makedirs(os.path.join(output_dir, "debug_col"), exist_ok=True)
-                                with open(os.path.join(output_dir, "debug_col", f"crop_{index}_ocr.txt"), "w", encoding="utf-8") as f:
-                                    f.write(ocr_hint_refreshed)
+                            os.makedirs("crops/debug_col", exist_ok=True)
+                            with open(f"crops/debug_col/crop_{index}_ocr.txt", "w", encoding="utf-8") as f:
+                                f.write(ocr_hint_refreshed)
                                 
                             # === 繪圖 + 存檔 ===
-                            img_gemini, drawn_lines, red_line_hint = self._draw_debug(ctx, index, output_dir, debug_mode)
-                            img_gemini.save(os.path.join(output_dir, f"crop_{index}{file_suffix}.png"))
+                            img_gemini, drawn_lines, red_line_hint = self._draw_debug(ctx, index)
+                            img_gemini.save(f"crops/crop_{index}{file_suffix}.png")
                             
                             # === OCR-First: 規則引擎直接分配欄位 ===
                             from core.ocr_field_assigner import assign_fields, classify_text, FormatType
@@ -1555,7 +1678,7 @@ class TableExtractor:
                                 for item in ocr_items:
                                     if classify_text(item["text"]) == FormatType.BEAM_ID:
                                         rule_beam["beam_id"] = _norm(item["text"])
-                                        pass # print(f"  [Fallback] 從原始 OCR 找到 beam_id: '{rule_beam['beam_id']}'")
+                                        print(f"  [Fallback] 從原始 OCR 找到 beam_id: '{rule_beam['beam_id']}'")
                                         break
                             
                             # === Fallback: dimensions 也可能被裁切過濾掉 ===
@@ -1566,7 +1689,7 @@ class TableExtractor:
                                     if _re.match(r'^\d+\s*[xX×*]\s*\d+$', clean_txt):
                                         from core.normalizer import normalize_text as _norm2
                                         rule_beam["dimensions"] = _norm2(item["text"])
-                                        pass # print(f"  [Fallback] 從原始 OCR 找到 dimensions: '{rule_beam['dimensions']}'")
+                                        print(f"  [Fallback] 從原始 OCR 找到 dimensions: '{rule_beam['dimensions']}'")
                             # 判斷是否需要 LLM 補位
                             LIST_FIELDS = {"top_main_bars_left", "top_main_bars_mid", "top_main_bars_right",
                                            "bottom_main_bars_left", "bottom_main_bars_mid", "bottom_main_bars_right"}
@@ -1574,7 +1697,7 @@ class TableExtractor:
                             
                             if needs_llm and self.model:
                                 # === LLM Fallback: 只處理規則引擎搞不定的部分 ===
-                                pass # print(f"[OCR-First] 片段 {index}: 需要 LLM 補位 ({len(low_conf_items)} 筆低信心項目)")
+                                print(f"[OCR-First] 片段 {index}: 需要 LLM 補位 ({len(low_conf_items)} 筆低信心項目)")
                                 
                                 # 建構精簡 prompt — 任務分類機制 (Task-Oriented)
                                 
@@ -1657,6 +1780,7 @@ class TableExtractor:
                                     else:
                                         llm_beams = None
                                 
+                                llm_beam = None
                                 if llm_beams and len(llm_beams) > 0:
                                     # === 合併策略：規則引擎的高信心值優先，LLM 填補空缺 ===
                                     llm_beam = llm_beams[0]  # 通常單跨只有一筆
@@ -1676,7 +1800,7 @@ class TableExtractor:
                                                     clean = [x for x in v if x != "LLM沒有東西"]
                                                     if not clean:
                                                         if rule_val:
-                                                            pass # print(f"  [LLM清空/否決] {k}: {rule_val} -> (空)")
+                                                            print(f"  [LLM清空/否決] {k}: {rule_val} -> (空)")
                                                         rule_beam[k] = []
                                                         continue  # LLM 認為完全沒東西，清空並保留空狀態
                                                         
@@ -1686,15 +1810,15 @@ class TableExtractor:
                                                     if all_valid:
                                                         # LLM 合規格 → 以 LLM 為主，取代規則引擎的值
                                                         rule_beam[k] = clean
-                                                        pass # print(f"  [LLM補位(取代)] {k} = {clean}")
+                                                        print(f"  [LLM補位(取代)] {k} = {clean}")
                                                     elif not (isinstance(rule_val, list) and rule_val):
                                                         # LLM 不合規格但原本是空的 → 姑且用 LLM 的
                                                         rule_beam[k] = clean
-                                                        pass # print(f"  [LLM補位] {k} = {clean}")
+                                                        print(f"  [LLM補位] {k} = {clean}")
                                                     else:
                                                         # LLM 不合規格且原本有值 → 保留原值
                                                         if not is_retry:
-                                                            pass # print(f"  [LLM略過] {k}: LLM回答不合規格 {v}，保留原值 {rule_val}")
+                                                            print(f"  [LLM略過] {k}: LLM回答不合規格 {v}，保留原值 {rule_val}")
                                                 continue
                                             
                                             # === 字串欄位：以 LLM 覆核結果為準 ===
@@ -1703,14 +1827,14 @@ class TableExtractor:
                                             if isinstance(v, str) and v and v != "LLM沒有東西":
                                                 if k in ("beam_id", "dimensions") and isinstance(rule_val, str) and rule_val:
                                                     if rule_val != v:
-                                                        pass # print(f"  [LLM覆蓋被駁回] {k}: OCR='{rule_val}', LLM='{v}' → 保留 OCR")
+                                                        print(f"  [LLM覆蓋被駁回] {k}: OCR='{rule_val}', LLM='{v}' → 保留 OCR")
                                                     continue
                                                 if rule_val != v:
-                                                    pass # print(f"  [LLM補位/更正] {k}: '{rule_val}' -> '{v}'")
+                                                    print(f"  [LLM補位/更正] {k}: '{rule_val}' -> '{v}'")
                                                 rule_beam[k] = v
                                             elif v == "LLM沒有東西" or v == "LLM看不出來":
                                                 if rule_val:
-                                                    pass # print(f"  [LLM清空/否決] {k}: '{rule_val}' -> (空)")
+                                                    print(f"  [LLM清空/否決] {k}: '{rule_val}' -> (空)")
                                                 rule_beam[k] = ""
 
                                     _apply_llm_result(llm_beam)
@@ -1753,15 +1877,15 @@ class TableExtractor:
                                             still_empty.append(k)
                                             
                                     MAX_RETRY_FIELDS = 12
-                                    pass # print(f"  [DEBUG-RETRY] still_empty = {still_empty}")
-                                    pass # print(f"  [DEBUG-RETRY] ALL_CHECK_FIELDS 檢查結果:")
+                                    print(f"  [DEBUG-RETRY] still_empty = {still_empty}")
+                                    print(f"  [DEBUG-RETRY] ALL_CHECK_FIELDS 檢查結果:")
                                     for _dbg_k in ALL_CHECK_FIELDS:
                                         _dbg_rule = rule_beam.get(_dbg_k)
                                         _dbg_llm = llm_beam.get(_dbg_k)
                                         _dbg_in = _dbg_k in still_empty
                                         print(f"    {_dbg_k}: rule_beam={repr(_dbg_rule)}, llm_first={repr(_dbg_llm)}, 列入重試={_dbg_in}")
                                     if still_empty and len(still_empty) <= MAX_RETRY_FIELDS:
-                                        pass # print(f"  [LLM二次重試] 發現仍有缺漏 {still_empty}，發動針對性詢問...")
+                                        print(f"  [LLM二次重試] 發現仍有缺漏 {still_empty}，發動針對性詢問...")
                                         
                                         clean_rule_beam = {}
                                         for key, value in rule_beam.items():
@@ -1815,7 +1939,7 @@ class TableExtractor:
                                             
                                             # 不合規格的雜訊：絕對不兜底
                                             if "fallback_suffix" in item and item["fallback_suffix"]:
-                                                pass # print(f"  [OCR Fallback] 放棄兜底不符規格的雜訊: '{item.get('text', '')}'")
+                                                print(f"  [OCR Fallback] 放棄兜底不符規格的雜訊: '{item.get('text', '')}'")
                                                 continue
                                             
                                             # LLM 已明確否決此欄位 (回覆「沒有東西」)：尊重 LLM 判定，不兜底
@@ -1828,7 +1952,7 @@ class TableExtractor:
                                                 if isinstance(llm_first_val, str) and llm_first_val in ("LLM沒有東西", "LLM看不出來"):
                                                     llm_vetoed = True
                                             if llm_vetoed:
-                                                pass # print(f"  [OCR Fallback] LLM 已明確否決 {pk}，不兜底: '{item.get('text', '')}'")
+                                                print(f"  [OCR Fallback] LLM 已明確否決 {pk}，不兜底: '{item.get('text', '')}'")
                                                 continue
                                             
                                             # 陣列欄位：已有值就不追加 (信任 LLM 或規則引擎的判定)
@@ -1836,12 +1960,12 @@ class TableExtractor:
                                                 # 但如果裡面全是 LLM 標記，視為空
                                                 real_vals = [x for x in v if x not in ("LLM沒有東西", "LLM看不出來")]
                                                 if real_vals:
-                                                    pass # print(f"  [OCR Fallback] {pk} 已有值 {real_vals}，略過: '{item.get('text', '')}'")
+                                                    print(f"  [OCR Fallback] {pk} 已有值 {real_vals}，略過: '{item.get('text', '')}'")
                                                     continue
                                             
                                             # 字串欄位：已有值就不覆蓋
                                             if isinstance(v, str) and v and v not in ("LLM沒有東西", "LLM看不出來"):
-                                                pass # print(f"  [OCR Fallback] {pk} 已有值 '{v}'，略過: '{item.get('text', '')}'")
+                                                print(f"  [OCR Fallback] {pk} 已有值 '{v}'，略過: '{item.get('text', '')}'")
                                                 continue
                                             
                                             # 欄位為空或只有 LLM 標記 → 執行兜底
@@ -1855,10 +1979,10 @@ class TableExtractor:
                                                 for part in parts:
                                                     if part not in rule_beam[pk]:
                                                         rule_beam[pk].append(part)
-                                                pass # print(f"  [OCR Fallback] 補回空欄位: {pk} = {rule_beam[pk]}")
+                                                print(f"  [OCR Fallback] 補回空欄位: {pk} = {rule_beam[pk]}")
                                             else:
                                                 rule_beam[pk] = fallback_val
-                                                pass # print(f"  [OCR Fallback] 補回空欄位: {pk} = '{fallback_val}'")
+                                                print(f"  [OCR Fallback] 補回空欄位: {pk} = '{fallback_val}'")
 
                                 # 全域清理: 將 "LLM沒有東西" 轉為真正的空位
                                 for k_beam, v_beam in list(rule_beam.items()):
@@ -1873,7 +1997,7 @@ class TableExtractor:
                                 crops_beams = [rule_beam]
                             else:
                                 # === 全部高信心，不需要 LLM ===
-                                pass # print(f"[OCR-First] 片段 {index}: 全部高信心！免 LLM 呼叫 ✅")
+                                print(f"[OCR-First] 片段 {index}: 全部高信心！免 LLM 呼叫 ✅")
                                 crops_beams = [rule_beam]
 
                             if crops_beams is None:
@@ -1915,6 +2039,7 @@ class TableExtractor:
                                     "score_text": ln.score_text
                                 })
                             b["_debug_lines"] = debug_lines_data
+                            b["_pass1_debug_lines"] = pass1_debug_lines
                             
                             b["_final_bbox"] = {
                                 "abs_x0": round(ctx.to_pdf_x(0), 2),
@@ -1957,15 +2082,33 @@ class TableExtractor:
                 # === 繪製全域除錯原圖 ===
                 try:
                     from PIL import ImageDraw
-                    debug_max_dim = max(page.rect.width, page.rect.height)
-                    scale_factor = 3.0
-                    if debug_max_dim * scale_factor > 8000.0:
-                        scale_factor = max(1.5, 8000.0 / debug_max_dim)
-                    debug_mat = fitz.Matrix(scale_factor, scale_factor)
+                    debug_mat = fitz.Matrix(3.0, 3.0)
                     debug_pix = page.get_pixmap(matrix=debug_mat)
                     debug_img = Image.open(io.BytesIO(debug_pix.tobytes("png")))
                     draw = ImageDraw.Draw(debug_img)
                     
+                    # 定義繪製虛線邊框的函式
+                    def draw_dashed_box(d, x0, y0, x1, y1, fill, width, dash_len=10):
+                        lines = [
+                            ((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)),
+                            ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))
+                        ]
+                        for pt1, pt2 in lines:
+                            dx, dy = pt2[0] - pt1[0], pt2[1] - pt1[1]
+                            dist = (dx**2 + dy**2)**0.5
+                            if dist == 0: continue
+                            vx, vy = dx/dist, dy/dist
+                            curr_len = 0
+                            drawn = True
+                            while curr_len < dist:
+                                step = min(dash_len, dist - curr_len)
+                                if drawn:
+                                    nx1, ny1 = pt1[0] + vx*curr_len, pt1[1] + vy*curr_len
+                                    nx2, ny2 = nx1 + vx*step, ny1 + vy*step
+                                    d.line([(nx1, ny1), (nx2, ny2)], fill=fill, width=width)
+                                curr_len += step
+                                drawn = not drawn
+                                
                     for b in final_beams:
                         if "_debug_lines" in b:
                             for ln in b["_debug_lines"]:
@@ -2006,40 +2149,33 @@ class TableExtractor:
                                         if lx < x or rx > x:
                                             draw.line([(lx, fy), (rx, fy)], fill=(255, 255, 0), width=3)
                                             
+                        if "_pass1_debug_lines" in b:
+                            for ln in b["_pass1_debug_lines"]:
+                                x = ln["abs_x"] * 3.0
+                                y = ln["abs_y"] * 3.0
+                                w = ln["abs_w"] * 3.0
+                                h = ln["abs_h"] * 3.0
+                                kind = ln.get("kind", "")
+                                status_enum = ln.get("status", "")
+                                
+                                if kind == "v_column":
+                                    # Pass 1 的柱子線用淡藍色 (Cyan)
+                                    draw.line([(x, y), (x, y + h)], fill=(0, 255, 255), width=2)
+                                elif kind == "v_rejected" or status_enum == "rejected":
+                                    # Pass 1 廢棄的垂直線用深藍色 (Dark Blue)
+                                    draw.line([(x, y), (x, y + h)], fill=(0, 0, 139), width=2)
+                                            
                         if "_final_bbox" in b:
                             fb = b["_final_bbox"]
                             sx0, sy0 = fb["abs_x0"] * 3.0, fb["abs_y0"] * 3.0
                             sx1, sy1 = fb["abs_x1"] * 3.0, fb["abs_y1"] * 3.0
                             
-                            # 繪製虛線邊框 (Dashed line) function
-                            def draw_dashed_box(d, x0, y0, x1, y1, fill, width, dash_len=10):
-                                lines = [
-                                    ((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)),
-                                    ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))
-                                ]
-                                for pt1, pt2 in lines:
-                                    dx, dy = pt2[0] - pt1[0], pt2[1] - pt1[1]
-                                    dist = (dx**2 + dy**2)**0.5
-                                    if dist == 0: continue
-                                    vx, vy = dx/dist, dy/dist
-                                    curr_len = 0
-                                    drawn = True
-                                    while curr_len < dist:
-                                        step = min(dash_len, dist - curr_len)
-                                        if drawn:
-                                            nx1, ny1 = pt1[0] + vx*curr_len, pt1[1] + vy*curr_len
-                                            nx2, ny2 = nx1 + vx*step, ny1 + vy*step
-                                            d.line([(nx1, ny1), (nx2, ny2)], fill=fill, width=width)
-                                        curr_len += step
-                                        drawn = not drawn
-                                        
                             draw_dashed_box(draw, sx0, sy0, sx1, sy1, fill=(255, 165, 0), width=6, dash_len=15)
                             # 在左上角標示 crop 短檔名
                             crop_fname = b.get("_crop_file", "crop")
                             draw.text((sx0 + 5, sy0 + 5), crop_fname, fill=(255, 165, 0))
-    
-                    if debug_mode:
-                                os.makedirs(output_dir, exist_ok=True)
+                            
+                    os.makedirs("crops", exist_ok=True)
                     debug_img.save("crops/debug_full_pdf.png")
                     print("[Debug] 全域除錯原圖已儲存至 crops/debug_full_pdf.png")
                 except Exception as e:
@@ -2062,11 +2198,7 @@ class TableExtractor:
                 )
                 
                 print("[Gemini Vision] 正在將 PDF 轉為高解析度全域大圖...")
-                max_dim = max(page.rect.width, page.rect.height)
-                scale_factor = 2.0
-                if max_dim * scale_factor > 8000.0:
-                    scale_factor = max(1.5, 8000.0 / max_dim)
-                mat = fitz.Matrix(scale_factor, scale_factor)
+                mat = fitz.Matrix(2.0, 2.0)
                 pix = page.get_pixmap(matrix=mat)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 

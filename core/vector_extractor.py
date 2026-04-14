@@ -161,7 +161,12 @@ class VectorExtractor:
                 area_a = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
                 area_b = (k[2] - k[0]) * (k[3] - k[1])
                 iou = inter / (area_a + area_b - inter + 1e-6)
-                if iou > iou_thresh:
+                
+                # IoM (Intersection over Minimum)：處理「大包小」重疊
+                # 若小框有超過 85% 的面積被包含在大框內，則將其視為冗餘刪除
+                iom = inter / (min(area_a, area_b) + 1e-6)
+                
+                if iou > iou_thresh or iom > 0.85:
                     suppressed = True
                     break
             if not suppressed:
@@ -170,7 +175,7 @@ class VectorExtractor:
                 drops.append(bbox)
         return keep, drops
 
-    def extract_opencv_bboxes(self, page_num: int = 0, cv_params: dict = None, progress_cb=None) -> tuple[list, dict]:
+    def extract_opencv_bboxes(self, page_num: int = 0, cv_params: dict = None) -> tuple[list, dict]:
         """
         Phase 3: OpenCV 形態學尋邊 (Morphological Bounding)
         接收動態 cv_params (dilation_iterations, min_area, padding_bottom) 取代寫死的魔法數字。
@@ -188,16 +193,7 @@ class VectorExtractor:
         page = self.doc[page_num]
         
         # 放大渲染做二值化處理
-        if progress_cb: progress_cb("[Phase 1.1] 正在將 PDF 轉換為超高解析度快取影像...", 15)
-        max_dim = max(page.rect.width, page.rect.height)
-        scale_factor = 4.0
-        # 解析度上限: 3500px (原始 8000 的 ~44%，速度快 5 倍，品質足以膨脹偵測)
-        if max_dim * scale_factor > 3500.0:
-            scale_factor = max(1.0, 3500.0 / max_dim)
-            
-        ratio = scale_factor / 4.0  # 基準為原始 4.0 的比例常數
-            
-        mat = fitz.Matrix(scale_factor, scale_factor)
+        mat = fitz.Matrix(4.0, 4.0)
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
         img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
         
@@ -207,12 +203,11 @@ class VectorExtractor:
         # --- Hough Transform 邊框清除器 ---
         hough_threshold_pct = int(cv_params.get('hough_threshold', 95)) / 100.0
         # 允許的斷線間隙放大一點，因為有時候圖框線會被跨過的字截斷
-        gap_limit = max(10, int(100 * ratio))
+        gap_limit = 100 
         
         h_len = int(pix.width * hough_threshold_pct)
         v_len = int(pix.height * hough_threshold_pct)
         
-        if progress_cb: progress_cb("[Phase 1.2] 影像二值化與 Hough 幾何骨架掃描中...", 25)
         # 找尋影像中所有的極長直線
         min_search_length = min(h_len, v_len)
         lines = cv2.HoughLinesP(thresh, 1, np.pi/180, threshold=min_search_length//2, minLineLength=min_search_length, maxLineGap=gap_limit)
@@ -225,26 +220,22 @@ class VectorExtractor:
                 
                 # 嚴格判斷方向與佔比：
                 # 1. 如果是水平線 (X跨度極大，Y沒什麼變)，就用寬度 (h_len) 來當標準
-                is_horizontal = (dx >= h_len) and (dy < max(5, int(50 * ratio)))
+                is_horizontal = (dx >= h_len) and (dy < 50)
                 # 2. 如果是垂直線 (Y跨度極大，X沒什麼變)，就用高度 (v_len) 來當標準
-                is_vertical = (dy >= v_len) and (dx < max(5, int(50 * ratio)))
+                is_vertical = (dy >= v_len) and (dx < 50)
                 
                 if is_horizontal or is_vertical:
-                    cv2.line(thresh, (x1, y1), (x2, y2), 0, thickness=max(2, int(20 * ratio)))
+                    cv2.line(thresh, (x1, y1), (x2, y2), 0, thickness=20)
         # -----------------------------------
         
-        kernel_size = max(3, int(15 * ratio))
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        kernel = np.ones((15, 15), np.uint8)
         dilated = cv2.dilate(thresh, kernel, iterations=dilation_iterations)
         
         # 儲存膨脹後的海島圖供使用者視覺除錯
-        output_dir = cv_params.get("output_dir", "crops")
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs("crops", exist_ok=True)
         img_island = Image.fromarray(dilated)
-        if cv_params.get("debug_mode", False):
-            img_island.save(os.path.join(output_dir, f"debug_islands_page_{page_num}.png"))
+        img_island.save(f"crops/debug_islands_page_{page_num}.png")
         
-        if progress_cb: progress_cb("[Phase 1.3] 執行膨脹運算與微觀結構輪廓偵測...", 35)
         contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
         total_contours = len(contours)
@@ -254,43 +245,33 @@ class VectorExtractor:
         # 記錄要存檔除錯的跌落圖塊
         dropped_for_save = []
         
-        for idx_c, c in enumerate(contours):
-            if progress_cb and idx_c > 0 and idx_c % 500 == 0:
-                progress_cb(f"[Phase 1.4] 正在分析第 {idx_c}/{total_contours} 個可能範圍...", 35 + int(10 * idx_c / total_contours))
+        for c in contours:
             x, y, w, h = cv2.boundingRect(c)
             area = w * h
             
             # 過濾掉雜訊、單獨文字體，以及超級大的頁框
-            dynamic_min_area = min_area * (ratio ** 2) # 動態縮放面積過濾門檻
-            padding_bottom_pdf = padding_bottom / 4.0 # 相容原本以 4.0 scale_factor 設計的 padding 值
-            
-            # 使用 PDF 絕對座標系轉換 (10 point = 外擴 10 單位)，徹底解決縮放導致的外擴變形
-            pdf_x0 = x / scale_factor
-            pdf_y0 = y / scale_factor
-            pdf_x1 = (x + w) / scale_factor
-            pdf_y1 = (y + h) / scale_factor
-            
-            if area > dynamic_min_area and area < (pix.width * pix.height * 0.25):
-                orig_x0 = max(0, pdf_x0 - 10)
-                orig_y0 = max(0, pdf_y0 - 10)
-                orig_x1 = min(page.rect.width, pdf_x1 + 10)
-                orig_y1 = min(page.rect.height, pdf_y1 + padding_bottom_pdf)
+            if area > min_area and area < (pix.width * pix.height * 0.25):
+                # 退回給 PDF 的原始單位坐標 (除以 4.0)
+                orig_x0 = max(0, (x - 40) / 4.0)
+                orig_y0 = max(0, (y - 40) / 4.0)
+                orig_x1 = min(page.rect.width, (x + w + 40) / 4.0)
+                orig_y1 = min(page.rect.height, (y + h + padding_bottom) / 4.0)
                 pre_nms_results.append([orig_x0, orig_y0, orig_x1, orig_y1])
             else:
                 noise_dropped += 1
                 # 若面積過大 (> 25%)，很可能是誤判為整張大圖框而被丟棄者，必須存檔供檢閱
                 if area >= (pix.width * pix.height * 0.25):
-                    orig_x0 = max(0, pdf_x0 - 5)
-                    orig_y0 = max(0, pdf_y0 - 5)
-                    orig_x1 = min(page.rect.width, pdf_x1 + 5)
-                    orig_y1 = min(page.rect.height, pdf_y1 + 5)
+                    orig_x0 = max(0, (x - 10) / 4.0)
+                    orig_y0 = max(0, (y - 10) / 4.0)
+                    orig_x1 = min(page.rect.width, (x + w + 10) / 4.0)
+                    orig_y1 = min(page.rect.height, (y + h + 10) / 4.0)
                     dropped_for_save.append(("oversize", [orig_x0, orig_y0, orig_x1, orig_y1]))
-                # 對於面積實在太小(例如只有單獨文字、碎點)者直接放生不存檔，否則會跑出幾千張圖拖垮系統
-                elif area > (4000 * (ratio ** 2)):
-                    orig_x0 = max(0, pdf_x0 - 5)
-                    orig_y0 = max(0, pdf_y0 - 5)
-                    orig_x1 = min(page.rect.width, pdf_x1 + 5)
-                    orig_y1 = min(page.rect.height, pdf_y1 + 5)
+                # 對於面積實在太小(例如只有單獨文字、碎點，面積 < 4000)者直接放生不存檔，否則會跑出幾千張圖拖垮系統
+                elif area > 4000:
+                    orig_x0 = max(0, (x - 10) / 4.0)
+                    orig_y0 = max(0, (y - 10) / 4.0)
+                    orig_x1 = min(page.rect.width, (x + w + 10) / 4.0)
+                    orig_y1 = min(page.rect.height, (y + h + 10) / 4.0)
                     dropped_for_save.append(("noise", [orig_x0, orig_y0, orig_x1, orig_y1]))
         
         pre_nms_len = len(pre_nms_results)
@@ -311,8 +292,8 @@ class VectorExtractor:
         refined_results = []
         for bbox in results:
             orig_x0, orig_y0, orig_x1, orig_y1 = bbox
-            px0, py0 = int(orig_x0 * scale_factor), int(orig_y0 * scale_factor)
-            px1, py1 = int(orig_x1 * scale_factor), int(orig_y1 * scale_factor)
+            px0, py0 = int(orig_x0 * 4.0), int(orig_y0 * 4.0)
+            px1, py1 = int(orig_x1 * 4.0), int(orig_y1 * 4.0)
             
             sub_thresh = thresh[py0:py1, px0:px1]
             if sub_thresh.shape[0] < 20 or sub_thresh.shape[1] < 20:
@@ -320,7 +301,7 @@ class VectorExtractor:
                 continue
                 
             # 專門針對文字特性，進行「水平強烈、垂直極輕微(以免吃掉跨梁間隙)」的膨脹
-            text_kernel = np.ones((max(1, int(4 * ratio)), max(10, int(40 * ratio))), np.uint8)
+            text_kernel = np.ones((4, 40), np.uint8)
             sub_dilated = cv2.dilate(sub_thresh, text_kernel, iterations=1)
             
             sub_contours, _ = cv2.findContours(sub_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -336,9 +317,8 @@ class VectorExtractor:
             
             # 2. 收集位於主梁下方所有的獨立文字島嶼
             blocks_below = []
-            overlap_allow = max(3, int(15 * ratio))
             for b_idx, b in enumerate(sub_boxes):
-                if b[1] > main_bottom_y - overlap_allow: # 允許些微重疊
+                if b[1] > main_bottom_y - 15: # 允許些微重疊
                     blocks_below.append(b)
                     
             # 依據 Y 軸高度由上往下排列
@@ -353,9 +333,8 @@ class VectorExtractor:
                 below_img = sub_thresh[main_bottom_y:, :]
                 row_sums = np.sum(below_img > 0, axis=1)
                 
-                # 定義真空帶：單列像素 < threshold (容許一點點垂直線或雜訊穿過)
-                vacuum_threshold = max(2, int(10 * ratio))
-                vacuum_mask = row_sums < vacuum_threshold
+                # 定義真空帶：單列像素 < 10 (容許一點點垂直線或雜訊穿過)
+                vacuum_mask = row_sums < 10
                 vacuums = []
                 current_vac = 0
                 for i, is_vac in enumerate(vacuum_mask):
@@ -368,25 +347,19 @@ class VectorExtractor:
                 if current_vac > 0:
                     vacuums.append((len(vacuum_mask) - current_vac, current_vac))
                     
-                # 尋找最佳的一刀切斷點（門檻隨 ratio 動態縮放）：
-                big_gap = max(6, int(25 * ratio))
-                med_gap = max(3, int(10 * ratio))
-                med_dist = max(10, int(40 * ratio))
-                small_gap = max(1, int(3 * ratio))
-                far_dist = max(18, int(70 * ratio))
-                
+                # 尋找最佳的一刀切斷點：
                 best_cut_offset = -1
                 for start, length in vacuums:
-                    # 1. 如果遇到超級大斷層，豪不猶豫馬上切，這一定是梁間縫隙
-                    if length > big_gap:
+                    # 1. 如果遇到超級大斷層 (> 25px)，豪不猶豫馬上切，這一定是梁間縫隙
+                    if length > 25:
                         best_cut_offset = start + (length // 2)
                         break
-                    # 2. 中等斷層，且距離主梁已超過一定距離 (代表已經越過大部分文字) -> 切！
-                    elif length > med_gap and start > med_dist:
+                    # 2. 中等斷層 (> 10px)，且距離主梁超過 40px (代表已經越過大部分文字) -> 切！
+                    elif length > 10 and start > 40:
                         best_cut_offset = start + (length // 2)
                         break
-                    # 3. 即使斷層很小，但距離主梁已很遠 (代表圖形極度擁擠但已經到了下一階段) -> 照切！
-                    elif length >= small_gap and start > far_dist:
+                    # 3. 即使斷層很小 (>= 3px)，但距離主梁高達 70px 以上 (代表圖形極度擁擠但已經到了下一階段) -> 照切！
+                    elif length >= 3 and start > 70:
                         best_cut_offset = start + (length // 2)
                         break
                         
@@ -394,16 +367,15 @@ class VectorExtractor:
                     # 成功找到斬波點
                     cutoff_py1 = main_bottom_y + best_cut_offset
                 else:
-                    # 如果什麼真空帶都找不到 (全部黏死)，退回安全底線：最後一個文字的底部 + 安全邊距
-                    safety_margin = max(4, int(15 * ratio))
+                    # 如果什麼真空帶都找不到 (全部黏死)，退回安全底線：最後一個文字的底部 + 15
                     if blocks_below:
-                        cutoff_py1 = min(cutoff_py1, blocks_below[-1][1] + blocks_below[-1][3] + safety_margin)
+                        cutoff_py1 = min(cutoff_py1, blocks_below[-1][1] + blocks_below[-1][3] + 15)
                     else:
-                        cutoff_py1 = min(cutoff_py1, main_bottom_y + safety_margin)
+                        cutoff_py1 = min(cutoff_py1, main_bottom_y + 15)
             # =======================================================================
             
             # 反算回原始座標
-            new_orig_y1 = orig_y0 + (cutoff_py1 / scale_factor)
+            new_orig_y1 = orig_y0 + (cutoff_py1 / 4.0)
             bbox[3] = min(orig_y1, new_orig_y1)
             refined_results.append(bbox)
             
@@ -418,8 +390,8 @@ class VectorExtractor:
         
         def is_title_candidate(text):
             """
-            嚴格辨識梁編號標題。
-            必須符合結構圖梁編號的特定格式，而非僅「含有字母」。
+            用結構化濾除法辨識梁編號標題。
+            不是強制規定格式，而是排除不可能是標題的東西。
             """
             text = text.strip()
             if len(text) < 2: 
@@ -427,23 +399,11 @@ class VectorExtractor:
             # 絕對不是標題的：鋼筋號數(#) 與 間距(@)
             if '@' in text or '#' in text: 
                 return False
-            # 尺寸格式 (如 50x70, 50*70) → 標題附屬物，放行
+            # 尺寸格式 (如 50x70, 50*70) 是標題附屬物 -> 是標題 
             if re.search(r'\d+\s*[xX×*]\s*\d+', text): 
                 return True
-            # 排除：單獨的樓層前綴 (B4F, RF, 1F, 2F, B1F 等)
-            if re.match(r'^[BR]?\d*F$', text, re.IGNORECASE):
-                return False
-            # 排除：腰筋標記 (E.F., EF)
-            if re.match(r'^E\.?F\.?$', text, re.IGNORECASE):
-                return False
-            # 排除：純數字 + 短線 (如 2-5, 13, 110 等量化數值)
-            if re.match(r'^[\d\-\.]+$', text):
-                return False
-            # 合法梁前綴 + 後續字元 (如 G1-2, FB1-4, CB-5, SB1)
-            if re.search(r'(F?W?[BGCS]|FB|FG|RB|CB|SB)\s*\d', text, re.IGNORECASE):
-                return True
-            # 含樓層前綴 + 空格 + 梁編號 (如 B4F FB1-4, RF G1)
-            if re.search(r'[BR]\d+F\s+\w', text, re.IGNORECASE):
+            # 如果含有英文字母 (如 G5-1, RF, WB-3) -> 大機率是標題
+            if re.search(r'[A-Za-z]', text): 
                 return True
             return False
             
@@ -509,7 +469,7 @@ class VectorExtractor:
                         self._title_ocr = RapidOCR()
                     
                     if self._title_ocr:
-                        search_pix = page.get_pixmap(matrix=fitz.Matrix(scale_factor, scale_factor), clip=search_rect)
+                        search_pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=search_rect)
                         if search_pix.height > 5 and search_pix.width > 5:
                             channels = search_pix.n
                             search_img = np.frombuffer(search_pix.samples, dtype=np.uint8).reshape(
@@ -525,10 +485,10 @@ class VectorExtractor:
                                 for ocr_bbox, ocr_text, ocr_conf in ocr_result:
                                     if ocr_conf > 0.5 and is_title_candidate(ocr_text):
                                         found_title = True
-                                        ocr_y_bottom = max(pt[1] for pt in ocr_bbox) / scale_factor
+                                        ocr_y_bottom = max(pt[1] for pt in ocr_bbox) / 4.0
                                         title_y_max = max(title_y_max, search_rect.y0 + ocr_y_bottom + 5)
-                                        ocr_x_left = min(pt[0] for pt in ocr_bbox) / scale_factor
-                                        ocr_x_right = max(pt[0] for pt in ocr_bbox) / scale_factor
+                                        ocr_x_left = min(pt[0] for pt in ocr_bbox) / 4.0
+                                        ocr_x_right = max(pt[0] for pt in ocr_bbox) / 4.0
                                         bbox[0] = min(bbox[0], search_rect.x0 + ocr_x_left - 10)
                                         bbox[2] = max(bbox[2], search_rect.x0 + ocr_x_right + 10)
                 except Exception:
@@ -539,7 +499,20 @@ class VectorExtractor:
                 title_reclaim_count += 1
         
         if title_reclaim_count > 0:
-            pass # print(f"[Phase 3.6] 標題歸屬回收: {title_reclaim_count} 個 bbox 已擴展以包含梁編號")
+            print(f"[Phase 3.6] 標題歸屬回收: {title_reclaim_count} 個 bbox 已擴展以包含梁編號")
+        # ==============================================================
+        
+        # === Phase 3.6.5: 晚期動態 NMS 去重 (Late NMS) ===
+        # 因為先前的 1D 真空斬波 (Phase 3.5) 與 標題向下回收 (Phase 3.6)，
+        # 可能使得原先面積差異極大、不被判定為重疊的「大框與雜訊小框」，
+        # 在經歷雙方斬波縮圖或向下延展後，變得「大小形狀如出一轍」，導致極高重疊度。
+        # 因此在送交昂貴的 OCR 與 LLM 分析前，必須再做一次 NMS 絞殺 (IoU > 0.6)。
+        final_nms_results, late_nms_drops = self._nms_bboxes(results, iou_thresh=0.6)
+        if len(late_nms_drops) > 0:
+            print(f"[Phase 3.6.5] 晚期 NMS 去重: 清除 {len(late_nms_drops)} 個高度重疊的克隆框")
+            for nd in late_nms_drops:
+                dropped_for_save.append(("late_nms", nd))
+        results = final_nms_results
         # ==============================================================
         
         
@@ -551,23 +524,19 @@ class VectorExtractor:
         enable_decomp = cv_params.get('enable_decomp', True)
         
         if enable_decomp:
-            rough_cut_dir = os.path.join(output_dir, "rough_cut_pass1")
-            if cv_params.get("debug_mode", False):
-                os.makedirs(rough_cut_dir, exist_ok=True)
-            if cv_params.get("debug_mode", False):
-                with open(os.path.join(rough_cut_dir, "titles_log.txt"), "w", encoding="utf-8") as _f:
-                    _f.write_f.write("=== 初切標題與字體大小紀錄 ===\n\n")
+            os.makedirs("crops/rough_cut_pass1", exist_ok=True)
+            with open("crops/rough_cut_pass1/titles_log.txt", "w", encoding="utf-8") as _f:
+                _f.write("=== 初切標題與字體大小紀錄 ===\n\n")
 
             # --- Two-Pass Architecture: Pass 1 (收集) ---
             all_potential_titles = []
             global_title_id = 0
             intermediate_bboxes_data = []
-            
-            # OCR 使用獨立的高解析度，確保標題定位精準 (不受輪廓偵測降解析度影響)
-            ocr_scale = max(scale_factor, 3.0)
                 
             for p_idx, bbox in enumerate(results):
                 orig_x0, orig_y0, orig_x1, orig_y1 = bbox
+                px0, py0 = int(orig_x0 * 4.0), int(orig_y0 * 4.0)
+                px1, py1 = int(orig_x1 * 4.0), int(orig_y1 * 4.0)
                 
                 search_rect = fitz.Rect(orig_x0, orig_y0, orig_x1, orig_y1)
                 
@@ -578,8 +547,7 @@ class VectorExtractor:
                         from rapidocr_onnxruntime import RapidOCR
                         self._title_ocr = RapidOCR()
                     
-                    # 使用獨立的 ocr_scale 渲染，不受輪廓偵測降解析度影響
-                    search_pix = page.get_pixmap(matrix=fitz.Matrix(ocr_scale, ocr_scale), clip=search_rect)
+                    search_pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=search_rect)
                     channels = search_pix.n
                     search_img = np.frombuffer(search_pix.samples, dtype=np.uint8).reshape(
                         search_pix.height, search_pix.width, channels
@@ -592,55 +560,24 @@ class VectorExtractor:
                     ocr_result, _ = self._title_ocr(search_img)
                     
                     if ocr_result:
-                        # === IoU/IoM 去重：移除被大框完全涵蓋的小碎片 ===
-                        def _ocr_iom(box_a, box_b):
-                            a_xs = [pt[0] for pt in box_a]
-                            a_ys = [pt[1] for pt in box_a]
-                            b_xs = [pt[0] for pt in box_b]
-                            b_ys = [pt[1] for pt in box_b]
-                            a_x0, a_y0, a_x1, a_y1 = min(a_xs), min(a_ys), max(a_xs), max(a_ys)
-                            b_x0, b_y0, b_x1, b_y1 = min(b_xs), min(b_ys), max(b_xs), max(b_ys)
-                            ix0 = max(a_x0, b_x0); iy0 = max(a_y0, b_y0)
-                            ix1 = min(a_x1, b_x1); iy1 = min(a_y1, b_y1)
-                            if ix1 <= ix0 or iy1 <= iy0:
-                                return 0.0
-                            inter = (ix1 - ix0) * (iy1 - iy0)
-                            a_area = max(1, (a_x1 - a_x0) * (a_y1 - a_y0))
-                            return inter / a_area
-                        
-                        ocr_sorted = sorted(ocr_result, key=lambda r: -(max(p[0] for p in r[0]) - min(p[0] for p in r[0])) * (max(p[1] for p in r[0]) - min(p[1] for p in r[0])))
-                        ocr_keep_mask = [True] * len(ocr_sorted)
-                        for i in range(len(ocr_sorted)):
-                            if not ocr_keep_mask[i]: continue
-                            for j in range(i + 1, len(ocr_sorted)):
-                                if not ocr_keep_mask[j]: continue
-                                iom = _ocr_iom(ocr_sorted[j][0], ocr_sorted[i][0])
-                                if iom > 0.5:
-                                    if ocr_sorted[j][1].strip() in ocr_sorted[i][1].strip():
-                                        ocr_keep_mask[j] = False
-                        ocr_deduped = [ocr_sorted[i] for i in range(len(ocr_sorted)) if ocr_keep_mask[i]]
-                        
-                        # 座標直接轉換為 PDF points (解析度獨立)
-                        for idx, (ocr_bbox, ocr_text, ocr_conf) in enumerate(ocr_deduped):
+                        for idx, (ocr_bbox, ocr_text, ocr_conf) in enumerate(ocr_result):
                             if ocr_conf > 0.5 and is_title_candidate(ocr_text):
                                 ys = [pt[1] for pt in ocr_bbox]
                                 xs = [pt[0] for pt in ocr_bbox]
                                 raw_titles.append({
                                     "text": ocr_text,
-                                    "cx": orig_x0 + (sum(xs)/len(xs)) / ocr_scale,
-                                    "cy": orig_y0 + (sum(ys)/len(ys)) / ocr_scale,
-                                    "bottom_y": orig_y0 + max(ys) / ocr_scale,
-                                    "h": (max(ys) - min(ys)) / ocr_scale,
-                                    "w": (max(xs) - min(xs)) / ocr_scale
+                                    "cx": sum(xs)/len(xs),
+                                    "cy": sum(ys)/len(ys),
+                                    "bottom_y": max(ys),
+                                    "h": max(ys) - min(ys),
+                                    "w": max(xs) - min(xs)
                                 })
                                 
-                    # 標題合併修正 — 固定 PDF-point 門檻 (解析度獨立)
-                    MERGE_CX_PT = 75   # 原 300px @4x = 75pt
-                    MERGE_CY_PT = 15   # 原 60px @4x = 15pt
+                    # 標題合併修正 (Spatial Merging)
                     for rt in raw_titles:
                         merged = False
                         for pt in potential_titles:
-                            if abs(rt["cx"] - pt["cx"]) < MERGE_CX_PT and abs(rt["cy"] - pt["cy"]) < MERGE_CY_PT:
+                            if abs(rt["cx"] - pt["cx"]) < 300 and abs(rt["cy"] - pt["cy"]) < 60:
                                 pt["text"] += " " + rt["text"]
                                 pt["cx"] = (pt["cx"] + rt["cx"]) / 2
                                 pt["cy"] = (pt["cy"] + rt["cy"]) / 2
@@ -652,6 +589,7 @@ class VectorExtractor:
                         if not merged:
                             potential_titles.append(rt)
                             
+                    # 為本母塊所有標題賦予 global id 並收集
                     for pt in potential_titles:
                         pt["id"] = global_title_id
                         all_potential_titles.append({"id": global_title_id, "text": pt["text"]})
@@ -660,6 +598,7 @@ class VectorExtractor:
                 intermediate_bboxes_data.append({
                     "p_idx": p_idx,
                     "bbox": bbox,
+                    "px0": px0, "py0": py0, "px1": px1, "py1": py1,
                     "search_rect": search_rect,
                     "raw_titles": raw_titles,
                     "potential_titles": potential_titles
@@ -705,133 +644,246 @@ class VectorExtractor:
                     valid_ids_set = set(t["id"] for t in all_potential_titles)
             
             # --- Two-Pass Architecture: Pass 2 (落刀裁切) ---
-            # 所有座標已在 Pass 1 轉為 PDF-point，此處全部用固定 pt 門檻
-            OVERLAP_PT = 35        # 50pt 導致過多重名，35pt ≈ 10mm 足夠保留邊緣鋼筋標註
-            TITLE_PAD_PT = 1.5     # 原 5px @4x ≈ 1.25pt
-            CUT_PAD_PT = 5.0       # 原 20px @4x = 5pt
-            Y_ROW_THRESH_PT = 30   # 原 120px @4x = 30pt
-            
             trimmed_parent_logs = []
             phase37_deleted = 0
             phase37_split = 0
             for item in intermediate_bboxes_data:
                 p_idx = item["p_idx"]
                 orig_x0, orig_y0, orig_x1, orig_y1 = item["bbox"]
+                px0, px1 = item["px0"], item["px1"]
+                py0 = item["py0"]
                 raw_titles = item["raw_titles"]
                 
+                # LLM 篩選合法標題
                 filtered_titles = [t for t in item["potential_titles"] if t["id"] in valid_ids_set]
                 was_split = False
                 
                 # === Phase 3.7 自檢 規則 1: 無合法標題 → 刪除 ===
                 if len(filtered_titles) == 0:
                     phase37_deleted += 1
-                    original_parents.append([orig_x0, orig_y0, orig_x1, orig_y1])
-                    trimmed_parent_logs.append({"idx": len(original_parents) - 1, "titles": []})
+                    print(f"[Phase 3.7] 刪除無標題母塊 {p_idx} (y0={orig_y0:.1f})")
+                    dropped_for_save.append(("no_title", [orig_x0, orig_y0, orig_x1, orig_y1]))
                     continue
                 
-                # === Phase 3.7 自檢 規則 2: Y 軸多排偵測 (PDF-point 門檻) ===
+                # === Phase 3.7 自檢 規則 2: Y 軸多排偵測 ===
+                # cy 是 4x 像素座標，120px at 4x ≈ 30pt
                 sorted_by_y = sorted(filtered_titles, key=lambda t: t["cy"])
                 y_groups = [[sorted_by_y[0]]]
                 for t in sorted_by_y[1:]:
-                    if t["cy"] - y_groups[-1][-1]["cy"] > Y_ROW_THRESH_PT:
+                    if t["cy"] - y_groups[-1][-1]["cy"] > 120:  # 120px at 4x = 30pt
                         y_groups.append([t])
                     else:
                         y_groups[-1].append(t)
                 
                 if len(y_groups) >= 2:
+                    # 垂直分割：從上排最低標題的 bottom_y + 20px(≈5pt) 切一刀
                     phase37_split += 1
+                    print(f"[Phase 3.7] 母塊 {p_idx} 垂直分割: {len(y_groups)} 排, 標題: {[t['text'] for t in filtered_titles]}")
                     
                     prev_pdf_y = orig_y0
                     for g_idx, group in enumerate(y_groups):
                         lowest_bottom = max(t["bottom_y"] for t in group)
-                        sub_y1 = min(orig_y1, lowest_bottom + TITLE_PAD_PT)
+                        
+                        # 截斷尾巴：每個子塊的底邊緊貼其所屬那排的最低標題
+                        sub_y1 = (py0 + lowest_bottom + 5) / 4.0
+                        sub_y1 = min(orig_y1, sub_y1)
                         
                         if g_idx < len(y_groups) - 1:
-                            cut_pdf_y = lowest_bottom + CUT_PAD_PT
+                            cut_pdf_y = (py0 + lowest_bottom + 20) / 4.0  # 5pt below
+                            # 上半部
                             sub_bbox = [orig_x0, prev_pdf_y, orig_x1, sub_y1]
                             original_parents.append(sub_bbox)
                             trimmed_parent_logs.append({"idx": len(original_parents) - 1, "titles": group})
                             
-                            # 水平分割 (PDF-point 空間)
+                            # 這個子塊內如果有 >= 2 個 X 方向的標題，也要做水平分割
                             x_sorted = sorted(group, key=lambda t: t["cx"])
                             if len(x_sorted) >= 2:
-                                split_pts = [(x_sorted[i]["cx"] + x_sorted[i+1]["cx"]) / 2.0 for i in range(len(x_sorted) - 1)]
-                                edges = [orig_x0] + split_pts + [orig_x1]
-                                for i in range(len(edges) - 1):
-                                    cx0 = max(orig_x0, edges[i] - (OVERLAP_PT if i > 0 else 0))
-                                    cx1 = min(orig_x1, edges[i+1] + (OVERLAP_PT if i < len(edges) - 2 else 0))
-                                    final_single_spans.append([cx0, prev_pdf_y, cx1, sub_y1])
+                                split_points_x = []
+                                for i in range(len(x_sorted) - 1):
+                                    mid_x = (x_sorted[i]["cx"] + x_sorted[i+1]["cx"]) / 2.0
+                                    split_points_x.append(px0 + mid_x)
+                                span_edges = [px0] + split_points_x + [px1]
+                                overlap = 200
+                                for i in range(len(span_edges) - 1):
+                                    child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
+                                    child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
+                                    child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
+                                    child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
+                                    final_single_spans.append([child_orig_x0, prev_pdf_y, child_orig_x1, sub_y1])
                                     child_to_parent_map[len(final_single_spans) - 1] = p_idx
                             else:
                                 final_single_spans.append(sub_bbox)
                             
                             prev_pdf_y = cut_pdf_y
                         else:
+                            # 最後一排：底邊用原始的 orig_y1
                             sub_bbox = [orig_x0, prev_pdf_y, orig_x1, orig_y1]
                             original_parents.append(sub_bbox)
                             trimmed_parent_logs.append({"idx": len(original_parents) - 1, "titles": group})
                             
                             x_sorted = sorted(group, key=lambda t: t["cx"])
                             if len(x_sorted) >= 2:
-                                split_pts = [(x_sorted[i]["cx"] + x_sorted[i+1]["cx"]) / 2.0 for i in range(len(x_sorted) - 1)]
-                                edges = [orig_x0] + split_pts + [orig_x1]
-                                for i in range(len(edges) - 1):
-                                    cx0 = max(orig_x0, edges[i] - (OVERLAP_PT if i > 0 else 0))
-                                    cx1 = min(orig_x1, edges[i+1] + (OVERLAP_PT if i < len(edges) - 2 else 0))
-                                    final_single_spans.append([cx0, prev_pdf_y, cx1, orig_y1])
+                                split_points_x = []
+                                for i in range(len(x_sorted) - 1):
+                                    mid_x = (x_sorted[i]["cx"] + x_sorted[i+1]["cx"]) / 2.0
+                                    split_points_x.append(px0 + mid_x)
+                                span_edges = [px0] + split_points_x + [px1]
+                                overlap = 200
+                                for i in range(len(span_edges) - 1):
+                                    child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
+                                    child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
+                                    child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
+                                    child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
+                                    final_single_spans.append([child_orig_x0, prev_pdf_y, child_orig_x1, orig_y1])
                                     child_to_parent_map[len(final_single_spans) - 1] = p_idx
                             else:
                                 final_single_spans.append(sub_bbox)
                     
-                    continue
+                    continue  # 已處理完，跳過下面的原有邏輯
                 
-                # === 單排母塊 ===
+                # === 原有邏輯：單排母塊 ===
                 if len(filtered_titles) >= 1:
-                    # 動態截斷尾巴 — 座標已是 PDF-point
-                    lowest_y_pdf = max(t["bottom_y"] for t in filtered_titles)
-                    orig_y1 = min(orig_y1, lowest_y_pdf + TITLE_PAD_PT)
+                    # [動態截斷尾巴]
+                    lowest_y_px = max(t["bottom_y"] for t in filtered_titles)
+                    # lowest_y_px 位於 search_img 內，該圖片最上緣對應的 PDF 坐標是 py0 / 4.0
+                    new_orig_y1 = (py0 + lowest_y_px + 5) / 4.0
+                    orig_y1 = min(orig_y1, new_orig_y1)
                     
                 original_parents.append([orig_x0, orig_y0, orig_x1, orig_y1])
-                trimmed_parent_logs.append({"idx": len(original_parents) - 1, "titles": filtered_titles})
+                trimmed_parent_logs.append({
+                    "idx": len(original_parents) - 1,
+                    "titles": filtered_titles
+                })
                             
                 if len(filtered_titles) >= 2:
                     was_split = True
-                    dominant_group = sorted(filtered_titles, key=lambda t: t["cx"])
+                    dominant_group = filtered_titles
+                    dominant_group.sort(key=lambda t: t["cx"])
+                    print(f"[Phase 3.8] 母塊 {p_idx} 共保留 {len(dominant_group)} 組真實梁標題: {[t['text'] for t in dominant_group]}")
                     
-                    if cv_params.get("debug_mode", False):
-                        with open(os.path.join(rough_cut_dir, "titles_log.txt"), "a", encoding="utf-8") as _f:
-                            _f.write(f"▼ 母塊 {p_idx} (bbox: [{orig_x0:.1f}, {orig_y0:.1f}, {orig_x1:.1f}, {orig_y1:.1f}])\n")
-                            _f.write(f"  OCR 單詞: {len(raw_titles)}, 採納標題: {len(dominant_group)}\n")
-                            for pt in dominant_group:
-                                _f.write(f"    {pt['text']:<25} cx={pt['cx']:.1f}pt cy={pt['cy']:.1f}pt\n")
-                            _f.write("\n")
+                    with open("crops/rough_cut_pass1/titles_log.txt", "a", encoding="utf-8") as _f:
+                        _f.write(f"▼ 母塊 {p_idx} (包圍盒: [x0={orig_x0:.1f}, y0={orig_y0:.1f}, x1={orig_x1:.1f}, y1={orig_y1:.1f}])\n")
+                        _f.write(f"  原始 OCR 單詞數量: {len(raw_titles)}\n")
+                        for idx, rt in enumerate(raw_titles):
+                            _f.write(f"    [Raw {idx}] {rt['text']} (cx={rt['cx']:.1f}, cy={rt['cy']:.1f}, w={rt['w']:.1f}, h={rt['h']:.1f})\n")
+                        _f.write(f"  總計偵測並採納 {len(dominant_group)} 個標題:\n")
+                        for pt in item["potential_titles"]:
+                            status = "✅採用" if pt["id"] in valid_ids_set else "❌LLM雜訊剔除"
+                            if status == "✅採用":
+                                _f.write(f"    [{status}] 文字: {pt['text']:<20} | cx={pt['cx']:.1f}, cy={pt['cy']:.1f} | 寬度: {pt['w']:>4.1f}px | 高度: {pt['h']:>4.1f}px\n")
+                            else:
+                                _f.write(f"    [{status}] 文字: {pt['text']:<20}\n")
+                        _f.write("\n")
                     
-                    # 水平分割 (全部 PDF-point 空間，零 pixel 依賴)
-                    split_pts = [(dominant_group[i]["cx"] + dominant_group[i+1]["cx"]) / 2.0 for i in range(len(dominant_group) - 1)]
-                    edges = [orig_x0] + split_pts + [orig_x1]
+                    split_points_x = []
+                    for i in range(len(dominant_group) - 1):
+                        mid_x = (dominant_group[i]["cx"] + dominant_group[i+1]["cx"]) / 2.0
+                        split_points_x.append(px0 + mid_x)
+                        
+                    span_edges = [px0] + split_points_x + [px1]
+                    overlap = 200
                     
-                    for i in range(len(edges) - 1):
-                        cx0 = max(orig_x0, edges[i] - (OVERLAP_PT if i > 0 else 0))
-                        cx1 = min(orig_x1, edges[i+1] + (OVERLAP_PT if i < len(edges) - 2 else 0))
-                        final_single_spans.append([cx0, orig_y0, cx1, orig_y1])
+                    for i in range(len(span_edges) - 1):
+                        child_px0 = max(px0, span_edges[i] - (overlap if i > 0 else 0))
+                        child_px1 = min(px1, span_edges[i+1] + (overlap if i < len(span_edges) - 2 else 0))
+                        
+                        child_orig_x0 = orig_x0 + ((child_px0 - px0) / 4.0)
+                        child_orig_x1 = orig_x0 + ((child_px1 - px0) / 4.0)
+                        
+                        final_single_spans.append([child_orig_x0, orig_y0, child_orig_x1, orig_y1])
                         child_to_parent_map[len(final_single_spans) - 1] = p_idx
                         
+                # If we did not split it, we simply retain the entire parent as our final single span
                 if not was_split:
                     final_single_spans.append([orig_x0, orig_y0, orig_x1, orig_y1])
                             
+            # === 超晚期 NMS 去重 (解決收斂克隆體 Convergent Clones) ===
+            # 當圖案經過 Phase 3.7 Y軸收斂後，原本不同的框可能會退化成完全一樣或互相覆蓋的框。
+            # 這裡我們利用「面積最大化」原則，進行終極洗牌與過濾，確保你提到的 "存進去的第一個不一定最好" 獲得解決。
+            
+            clean_spans = []
+            # 1. 處理 final_single_spans
+            final_single_spans_sorted = sorted(final_single_spans, key=lambda b: (b[2]-b[0])*(b[3]-b[1]), reverse=True)
+            for bbox in final_single_spans_sorted:
+                is_dup = False
+                for k in clean_spans:
+                    inter_x0 = max(bbox[0], k[0])
+                    inter_y0 = max(bbox[1], k[1])
+                    inter_x1 = min(bbox[2], k[2])
+                    inter_y1 = min(bbox[3], k[3])
+                    inter = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
+                    if inter > 0:
+                        area_a = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                        area_b = (k[2] - k[0]) * (k[3] - k[1])
+                        iou = inter / (area_a + area_b - inter + 1e-6)
+                        iom = inter / (min(area_a, area_b) + 1e-6)
+                        if iou > 0.6 or iom > 0.85:
+                            is_dup = True
+                            break
+                if not is_dup:
+                    clean_spans.append(bbox)
+            # 恢復閱讀順序
+            clean_spans.sort(key=lambda b: (b[1], b[0]))
+            final_single_spans = clean_spans
+            
+            # 2. 處理 original_parents (純視覺輸出用途)
+            clean_parents = []
+            parents_with_idx = [(i, b) for i, b in enumerate(original_parents)]
+            parents_with_idx.sort(key=lambda item: (item[1][2]-item[1][0])*(item[1][3]-item[1][1]), reverse=True)
+            
+            clean_idx_map = {}  # old_idx -> new_idx
+            for old_idx, bbox in parents_with_idx:
+                is_dup = False
+                for k in clean_parents:
+                    inter_x0 = max(bbox[0], k[0])
+                    inter_y0 = max(bbox[1], k[1])
+                    inter_x1 = min(bbox[2], k[2])
+                    inter_y1 = min(bbox[3], k[3])
+                    inter = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
+                    if inter > 0:
+                        area_a = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                        area_b = (k[2] - k[0]) * (k[3] - k[1])
+                        iou = inter / (area_a + area_b - inter + 1e-6)
+                        iom = inter / (min(area_a, area_b) + 1e-6)
+                        if iou > 0.6 or iom > 0.85:
+                            is_dup = True
+                            break
+                if not is_dup:
+                    clean_parents.append(bbox)
+                    clean_idx_map[old_idx] = len(clean_parents) - 1
+                else:
+                    dropped_for_save.append(("clone_parent", bbox))
+                    
+            clean_parents.sort(key=lambda b: (b[1], b[0]))
+            # Because clean_parents were appended iteratively and then sorted again, clean_idx_map indices would be wrong.
+            # So, recompute the new_idx mapping based on final sorting.
+            old_idx_to_final_idx = {}
+            for old_idx in clean_idx_map.keys():
+                bbox = original_parents[old_idx]
+                old_idx_to_final_idx[old_idx] = clean_parents.index(bbox) # O(N) is fine since N < 50
+                
+            original_parents = clean_parents
+            
+            # 3. 修正 trimmed_parent_logs
+            new_trimmed_logs = []
+            for log in trimmed_parent_logs:
+                if log["idx"] in old_idx_to_final_idx:
+                    log_copy = dict(log)
+                    log_copy["idx"] = old_idx_to_final_idx[log["idx"]]
+                    new_trimmed_logs.append(log_copy)
+            trimmed_parent_logs = new_trimmed_logs
             if phase37_deleted > 0 or phase37_split > 0:
-                pass # print(f"[Phase 3.7] Y軸自檢: 刪除 {phase37_deleted} 無標題塊, 垂直分割 {phase37_split} 多排塊")
+                print(f"[Phase 3.7] Y軸自檢: 刪除 {phase37_deleted} 無標題塊, 垂直分割 {phase37_split} 多排塊")
             print(f"[Phase 3.8] 原有 {len(original_parents)} 母塊。套用單跨裁切後，共準備送出 {len(final_single_spans)} 個最終獨立測資。")
             results = final_single_spans
         # ==============================================================
         # 執行除錯裁切並儲存
         if dropped_for_save or final_single_spans or original_parents:
             
-            drop_dir = os.path.join(output_dir, "drop")
-            trimmed_dir = os.path.join(output_dir, "trimmed_parents")
-            if cv_params.get("debug_mode", False):
-                os.makedirs(drop_dir, exist_ok=True)
-                os.makedirs(trimmed_dir, exist_ok=True)
+            drop_dir = "crops/drop"
+            trimmed_dir = "crops/trimmed_parents"
+            os.makedirs(drop_dir, exist_ok=True)
+            os.makedirs(trimmed_dir, exist_ok=True)
             mat_save = fitz.Matrix(2.0, 2.0)
             
             for idx, (reason, rect_coords) in enumerate(dropped_for_save):
@@ -868,31 +920,6 @@ class VectorExtractor:
                         f.write("\n")
             except Exception as e:
                 print("Failed to write titles_summary.txt", e)
-                
-            if cv_params.get("debug_mode", False):
-                try:
-                    # 墨水法染色圖：將最終的所有切片範圍（半透明紅）畫在全圖上
-                    from PIL import ImageDraw
-                    full_pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                    if full_pix.n == 1:
-                        mode = "L"
-                    elif full_pix.n == 3:
-                        mode = "RGB"
-                    elif full_pix.n == 4:
-                        mode = "RGBA"
-                        
-                    # 確保圖片為 RGBA 以支援半透明畫筆
-                    full_img = Image.frombytes(mode, [full_pix.width, full_pix.height], full_pix.samples).convert("RGBA")
-                    draw = ImageDraw.Draw(full_img, "RGBA")
-                    for rect in results:
-                        r = fitz.Rect(rect) * 2.0
-                        draw.rectangle([r.x0, r.y0, r.x1, r.y1], fill=(255, 0, 0, 64), outline=(255, 0, 0, 255), width=2)
-                    
-                    stain_path = os.path.join(output_dir, f"debug_full_staining_{page_num}.png")
-                    full_img.convert("RGB").save(stain_path)
-                    print(f"[Debug] 墨水法染色圖已儲存至 {stain_path}")
-                except Exception as e:
-                    print(f"[Debug] 無法生成墨水染色圖: {e}")
         
         metrics = {
             "total_contours": total_contours,
@@ -903,7 +930,8 @@ class VectorExtractor:
             "parent_count": len(original_parents),
             "child_count": len(final_single_spans),
             "child_to_parent_map": child_to_parent_map,
-            "original_parents": original_parents
+            "original_parents": original_parents,
+            "dropped_for_save": dropped_for_save
         }
         
         return results, metrics
