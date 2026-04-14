@@ -191,9 +191,9 @@ class VectorExtractor:
         if progress_cb: progress_cb("[Phase 1.1] 正在將 PDF 轉換為超高解析度快取影像...", 15)
         max_dim = max(page.rect.width, page.rect.height)
         scale_factor = 4.0
-        # 將最高解析度從 8000 降至 2500，大幅加速找尋外框的速度
-        if max_dim * scale_factor > 2500.0:
-            scale_factor = max(1.0, 2500.0 / max_dim)
+        # 解析度上限: 3500px (原始 8000 的 ~44%，速度快 5 倍，品質足以膨脹偵測)
+        if max_dim * scale_factor > 3500.0:
+            scale_factor = max(1.0, 3500.0 / max_dim)
             
         ratio = scale_factor / 4.0  # 基準為原始 4.0 的比例常數
             
@@ -706,7 +706,7 @@ class VectorExtractor:
             
             # --- Two-Pass Architecture: Pass 2 (落刀裁切) ---
             # 所有座標已在 Pass 1 轉為 PDF-point，此處全部用固定 pt 門檻
-            OVERLAP_PT = 50        # 原 200px @4x = 50pt
+            OVERLAP_PT = 35        # 50pt 導致過多重名，35pt ≈ 10mm 足夠保留邊緣鋼筋標註
             TITLE_PAD_PT = 1.5     # 原 5px @4x ≈ 1.25pt
             CUT_PAD_PT = 5.0       # 原 20px @4x = 5pt
             Y_ROW_THRESH_PT = 30   # 原 120px @4x = 30pt
@@ -868,6 +868,31 @@ class VectorExtractor:
                         f.write("\n")
             except Exception as e:
                 print("Failed to write titles_summary.txt", e)
+                
+            if cv_params.get("debug_mode", False):
+                try:
+                    # 墨水法染色圖：將最終的所有切片範圍（半透明紅）畫在全圖上
+                    from PIL import ImageDraw
+                    full_pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                    if full_pix.n == 1:
+                        mode = "L"
+                    elif full_pix.n == 3:
+                        mode = "RGB"
+                    elif full_pix.n == 4:
+                        mode = "RGBA"
+                        
+                    # 確保圖片為 RGBA 以支援半透明畫筆
+                    full_img = Image.frombytes(mode, [full_pix.width, full_pix.height], full_pix.samples).convert("RGBA")
+                    draw = ImageDraw.Draw(full_img, "RGBA")
+                    for rect in results:
+                        r = fitz.Rect(rect) * 2.0
+                        draw.rectangle([r.x0, r.y0, r.x1, r.y1], fill=(255, 0, 0, 64), outline=(255, 0, 0, 255), width=2)
+                    
+                    stain_path = os.path.join(output_dir, f"debug_full_staining_{page_num}.png")
+                    full_img.convert("RGB").save(stain_path)
+                    print(f"[Debug] 墨水法染色圖已儲存至 {stain_path}")
+                except Exception as e:
+                    print(f"[Debug] 無法生成墨水染色圖: {e}")
         
         metrics = {
             "total_contours": total_contours,
