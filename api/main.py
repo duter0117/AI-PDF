@@ -169,6 +169,33 @@ async def extract_drawings(
 
     # 最終全域圖欄位 (可供前端放置 base64 或是圖檔 url)
     global_image = ""
+    try:
+        import fitz
+        import base64
+        doc = fitz.Document(stream=pdf_bytes, filetype="pdf")
+        page = doc[page_num]
+        
+        # 繪製所有偵測到的梁框
+        for beam in final.get("aligned_beams", []):
+            rect = beam.get("spatial_anchor_rect_x_y")
+            if rect and len(rect) == 4:
+                # rect 為 [x0, y0, x1, y1]
+                r = fitz.Rect(rect[0], rect[1], rect[2], rect[3])
+                # 畫紅色半透明框
+                page.draw_rect(r, color=(1, 0, 0), width=2)
+                
+                beam_id = beam.get("beam_id", "")
+                if beam_id:
+                    # 在框的左上角標上藍色字體的梁編號
+                    page.insert_text((r.x0, r.y0 - 5), str(beam_id), fontsize=10, color=(0, 0, 1))
+
+        # 轉譯成圖片 (DPI 150 畫質與效能平衡)
+        pix = page.get_pixmap(dpi=150)
+        img_data = pix.tobytes("png")
+        global_image_b64 = base64.b64encode(img_data).decode("utf-8")
+        global_image = f"data:image/png;base64,{global_image_b64}"
+    except Exception as e:
+        print(f"Failed to generate global image: {e}")
 
     return {
         "global_image": global_image,
