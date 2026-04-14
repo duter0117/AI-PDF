@@ -1123,7 +1123,8 @@ class TableExtractor:
     # ================================================================
     async def extract_tables(self, pdf_bytes: bytes, page_num: int = 0,
                              cv_bboxes: list = None, progress_cb=None,
-                             cv_metrics: dict = None, voting_rounds: int = 1) -> str:
+                             cv_metrics: dict = None, voting_rounds: int = 1,
+                             output_dir: str = "crops", debug_mode: bool = False) -> str:
         """
         強制大腦輸出純 JSON 字串，完全杜絕任何問候語或前文後理。
         Phase 5: 單圖單發 (Single-Focus Inference) 解決多模態眼花問題。
