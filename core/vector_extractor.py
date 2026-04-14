@@ -191,8 +191,11 @@ class VectorExtractor:
         if progress_cb: progress_cb("[Phase 1.1] 正在將 PDF 轉換為超高解析度快取影像...", 15)
         max_dim = max(page.rect.width, page.rect.height)
         scale_factor = 4.0
-        if max_dim * scale_factor > 8000.0:
-            scale_factor = max(2.0, 8000.0 / max_dim)
+        # 將最高解析度從 8000 降至 2500，大幅加速找尋外框的速度
+        if max_dim * scale_factor > 2500.0:
+            scale_factor = max(1.0, 2500.0 / max_dim)
+            
+        ratio = scale_factor / 4.0  # 基準為原始 4.0 的比例常數
             
         mat = fitz.Matrix(scale_factor, scale_factor)
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
@@ -204,7 +207,7 @@ class VectorExtractor:
         # --- Hough Transform 邊框清除器 ---
         hough_threshold_pct = int(cv_params.get('hough_threshold', 95)) / 100.0
         # 允許的斷線間隙放大一點，因為有時候圖框線會被跨過的字截斷
-        gap_limit = 100 
+        gap_limit = max(10, int(100 * ratio))
         
         h_len = int(pix.width * hough_threshold_pct)
         v_len = int(pix.height * hough_threshold_pct)
@@ -222,15 +225,16 @@ class VectorExtractor:
                 
                 # 嚴格判斷方向與佔比：
                 # 1. 如果是水平線 (X跨度極大，Y沒什麼變)，就用寬度 (h_len) 來當標準
-                is_horizontal = (dx >= h_len) and (dy < 50)
+                is_horizontal = (dx >= h_len) and (dy < max(5, int(50 * ratio)))
                 # 2. 如果是垂直線 (Y跨度極大，X沒什麼變)，就用高度 (v_len) 來當標準
-                is_vertical = (dy >= v_len) and (dx < 50)
+                is_vertical = (dy >= v_len) and (dx < max(5, int(50 * ratio)))
                 
                 if is_horizontal or is_vertical:
-                    cv2.line(thresh, (x1, y1), (x2, y2), 0, thickness=20)
+                    cv2.line(thresh, (x1, y1), (x2, y2), 0, thickness=max(2, int(20 * ratio)))
         # -----------------------------------
         
-        kernel = np.ones((15, 15), np.uint8)
+        kernel_size = max(3, int(15 * ratio))
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
         dilated = cv2.dilate(thresh, kernel, iterations=dilation_iterations)
         
         # 儲存膨脹後的海島圖供使用者視覺除錯
@@ -257,28 +261,36 @@ class VectorExtractor:
             area = w * h
             
             # 過濾掉雜訊、單獨文字體，以及超級大的頁框
-            if area > min_area and area < (pix.width * pix.height * 0.25):
-                # 退回給 PDF 的原始單位坐標 (除以 4.0)
-                orig_x0 = max(0, (x - 40) / scale_factor)
-                orig_y0 = max(0, (y - 40) / scale_factor)
-                orig_x1 = min(page.rect.width, (x + w + 40) / scale_factor)
-                orig_y1 = min(page.rect.height, (y + h + padding_bottom) / scale_factor)
+            dynamic_min_area = min_area * (ratio ** 2) # 動態縮放面積過濾門檻
+            padding_bottom_pdf = padding_bottom / 4.0 # 相容原本以 4.0 scale_factor 設計的 padding 值
+            
+            # 使用 PDF 絕對座標系轉換 (10 point = 外擴 10 單位)，徹底解決縮放導致的外擴變形
+            pdf_x0 = x / scale_factor
+            pdf_y0 = y / scale_factor
+            pdf_x1 = (x + w) / scale_factor
+            pdf_y1 = (y + h) / scale_factor
+            
+            if area > dynamic_min_area and area < (pix.width * pix.height * 0.25):
+                orig_x0 = max(0, pdf_x0 - 10)
+                orig_y0 = max(0, pdf_y0 - 10)
+                orig_x1 = min(page.rect.width, pdf_x1 + 10)
+                orig_y1 = min(page.rect.height, pdf_y1 + padding_bottom_pdf)
                 pre_nms_results.append([orig_x0, orig_y0, orig_x1, orig_y1])
             else:
                 noise_dropped += 1
                 # 若面積過大 (> 25%)，很可能是誤判為整張大圖框而被丟棄者，必須存檔供檢閱
                 if area >= (pix.width * pix.height * 0.25):
-                    orig_x0 = max(0, (x - 10) / scale_factor)
-                    orig_y0 = max(0, (y - 10) / scale_factor)
-                    orig_x1 = min(page.rect.width, (x + w + 10) / scale_factor)
-                    orig_y1 = min(page.rect.height, (y + h + 10) / scale_factor)
+                    orig_x0 = max(0, pdf_x0 - 5)
+                    orig_y0 = max(0, pdf_y0 - 5)
+                    orig_x1 = min(page.rect.width, pdf_x1 + 5)
+                    orig_y1 = min(page.rect.height, pdf_y1 + 5)
                     dropped_for_save.append(("oversize", [orig_x0, orig_y0, orig_x1, orig_y1]))
-                # 對於面積實在太小(例如只有單獨文字、碎點，面積 < 4000)者直接放生不存檔，否則會跑出幾千張圖拖垮系統
-                elif area > 4000:
-                    orig_x0 = max(0, (x - 10) / scale_factor)
-                    orig_y0 = max(0, (y - 10) / scale_factor)
-                    orig_x1 = min(page.rect.width, (x + w + 10) / scale_factor)
-                    orig_y1 = min(page.rect.height, (y + h + 10) / scale_factor)
+                # 對於面積實在太小(例如只有單獨文字、碎點)者直接放生不存檔，否則會跑出幾千張圖拖垮系統
+                elif area > (4000 * (ratio ** 2)):
+                    orig_x0 = max(0, pdf_x0 - 5)
+                    orig_y0 = max(0, pdf_y0 - 5)
+                    orig_x1 = min(page.rect.width, pdf_x1 + 5)
+                    orig_y1 = min(page.rect.height, pdf_y1 + 5)
                     dropped_for_save.append(("noise", [orig_x0, orig_y0, orig_x1, orig_y1]))
         
         pre_nms_len = len(pre_nms_results)
@@ -308,7 +320,7 @@ class VectorExtractor:
                 continue
                 
             # 專門針對文字特性，進行「水平強烈、垂直極輕微(以免吃掉跨梁間隙)」的膨脹
-            text_kernel = np.ones((4, 40), np.uint8)
+            text_kernel = np.ones((max(1, int(4 * ratio)), max(10, int(40 * ratio))), np.uint8)
             sub_dilated = cv2.dilate(sub_thresh, text_kernel, iterations=1)
             
             sub_contours, _ = cv2.findContours(sub_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -324,8 +336,9 @@ class VectorExtractor:
             
             # 2. 收集位於主梁下方所有的獨立文字島嶼
             blocks_below = []
+            overlap_allow = max(3, int(15 * ratio))
             for b_idx, b in enumerate(sub_boxes):
-                if b[1] > main_bottom_y - 15: # 允許些微重疊
+                if b[1] > main_bottom_y - overlap_allow: # 允許些微重疊
                     blocks_below.append(b)
                     
             # 依據 Y 軸高度由上往下排列
@@ -340,8 +353,9 @@ class VectorExtractor:
                 below_img = sub_thresh[main_bottom_y:, :]
                 row_sums = np.sum(below_img > 0, axis=1)
                 
-                # 定義真空帶：單列像素 < 10 (容許一點點垂直線或雜訊穿過)
-                vacuum_mask = row_sums < 10
+                # 定義真空帶：單列像素 < threshold (容許一點點垂直線或雜訊穿過)
+                vacuum_threshold = max(2, int(10 * ratio))
+                vacuum_mask = row_sums < vacuum_threshold
                 vacuums = []
                 current_vac = 0
                 for i, is_vac in enumerate(vacuum_mask):
