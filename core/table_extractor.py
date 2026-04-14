@@ -502,7 +502,7 @@ class TableExtractor:
                     if o_fmt == FormatType.REBAR:
                         o_box = (other["min_x"], other["min_y"], other["max_x"], other["max_y"])
                         d_iou, d_iom = compute_overlap(item_box, o_box)
-                        print(f"    vs REBAR '{other['text']}' bbox={o_box} → IoU={d_iou:.3f}, IoM={d_iom:.3f}")
+                        pass # print(f"    vs REBAR '{other['text']}' bbox={o_box} → IoU={d_iou:.3f}, IoM={d_iom:.3f}")
         
         # === 近距離疑似殘片降信心 (Proximity Confidence Demotion) ===
         # 如果一個短數字出現在 REBAR 密集區域且字面上是鄰近 REBAR 的子字串，
