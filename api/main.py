@@ -123,19 +123,61 @@ async def get_task_status(task_id: str):
 @app.post("/api/v1/extract-drawings")
 async def extract_drawings(
     file: UploadFile = File(...),
-    page_num: int = Form(0)
+    page_num: int = Form(0),
+    dilation_iterations: int = Form(2),
+    min_area: int = Form(100000),
+    padding_bottom: int = Form(160),
+    hough_threshold: int = Form(95),
+    auto_tune: str = Form("false"),
+    enable_decomp: str = Form("true"),
+    voting_rounds: int = Form(1)
 ):
     """
-    上傳 PDF 工程圖說，同步等待結果 (約 20~40 秒)。
+    [Demo預備] 上傳 PDF 工程圖說與設定參數，同步等待結果。
+    回傳格式符合展示需求：全域圖預留、分析時間、LLM次數、消耗TOKEN、梁辨識結果
     """
+    import time
+    start_time = time.time()
+
     pdf_bytes = await file.read()
+    cv_params = {
+        "dilation_iterations": dilation_iterations,
+        "min_area": min_area,
+        "padding_bottom": padding_bottom,
+        "hough_threshold": hough_threshold,
+        "auto_tune": str(auto_tune).lower() == "true",
+        "enable_decomp": str(enable_decomp).lower() == "true",
+        "voting_rounds": max(1, min(3, int(voting_rounds)))
+    }
+
     result = await graph.ainvoke({
         "pdf_bytes": pdf_bytes,
         "page_num": page_num,
         "task_id": None,
-        "cv_params": {}
+        "cv_params": cv_params
     })
-    return result.get("final_output", {"error": "Pipeline failed"})
+    
+    final = result.get("final_output", {})
+    elapsed = round(time.time() - start_time, 2)
+    api_metrics = final.get("api_metrics", {})
+    
+    # 計算 Token 與呼叫次數
+    llm_calls = api_metrics.get("llm_calls", 0)
+    prompt_tokens = api_metrics.get("prompt_tokens", 0)
+    candidates_tokens = api_metrics.get("candidates_tokens", 0)
+    total_tokens = prompt_tokens + candidates_tokens
+
+    # 最終全域圖欄位 (可供前端放置 base64 或是圖檔 url)
+    global_image = ""
+
+    return {
+        "global_image": global_image,
+        "execution_time_seconds": elapsed,
+        "llm_calls": llm_calls,
+        "tokens_used": total_tokens,
+        "analysis_result": final.get("aligned_beams", []),
+        "raw_json_string": final.get("raw_json_string", "")
+    }
 
 @app.get("/health")
 def health_check():
