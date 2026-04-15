@@ -1912,17 +1912,26 @@ class TableExtractor:
                                     # === 合併策略：規則引擎的高信心值優先，LLM 填補空缺 ===
                                     llm_beam = llm_beams[0]  # 通常單跨只有一筆
                                     
-                                    # 儲存原始 LLM 回�                                             "【⚠️ 數字視覺混淆警告 — 本次重試請特別注意！】\n"
-                                             "下列高混淆配對是誤判主因，請再看一眼後再填入：\n"
-                                             "  · 5 vs 6：5 頂部平直橫線；6 底部有封閉圓圈。\n"
-                                             "  · 1 vs 7：1 無橫線；7 頂端有水平橫線。\n"
-                                             "  · 1 vs 2：1 只有垂直線；2 底部有水平橫底。\n"
-                                             "  · 0 vs 8：0 是單圓；8 是雙圓中間有交叉。\n"
-                                             "  · 3 vs 8：3 左側開口；8 完全閉合。\n"
-                                             "  · 6 vs G：6 底有圓圈；G 右側內有橫線。\n"
-                                             "  · 8 vs B：8 對稱雙圓；B 左側有垂直直線。\n"
-                                             "【計數再確認】底部有圓→可能 6 非 5；右側兩橫→可能 12 非 11。\n\n"
-                                             f"【已確定資料 (請保留，並填補遺失處)】:\n{json.dumps(clean_rule_beam, ensure_ascii=False, indent=2)}"lid:
+                                    # 儲存原始 LLM 回覆
+                                    rule_beam["_raw_llm"] = json.dumps(llm_beam, ensure_ascii=False)
+
+                                    def _apply_llm_result(llm_beam_data, is_retry=False):
+                                        for k, v in llm_beam_data.items():
+                                            if k.startswith("_") or k in ("self_confidence", "note", "crop_index"):
+                                                continue
+                                            rule_val = rule_beam.get(k)
+
+                                            # === 陣列欄位：LLM 優先（規則引擎難以保證格式） ===
+                                            if k in LIST_FIELDS:
+                                                clean = None
+                                                if isinstance(v, list) and v:
+                                                    real = [x for x in v if x not in ("LLM沒有東西", "LLM看不出來")]
+                                                    if real:
+                                                        clean = real
+                                                elif isinstance(v, str) and v not in ("LLM沒有東西", "LLM看不出來", ""):
+                                                    clean = [v]
+                                                if clean:
+                                                    if isinstance(rule_val, list) and rule_val:
                                                         # LLM 合規格 → 以 LLM 為主，取代規則引擎的值
                                                         rule_beam[k] = clean
                                                         print(f"  [LLM補位(取代)] {k} = {clean}")
@@ -2010,18 +2019,41 @@ class TableExtractor:
                                                 is_empty = True
                                         if is_empty:
                                             still_empty.append(k)
-                                            
+
+                                    # === 偵測 OCR vs LLM 衝突欄位 ===
+                                    # 規則：LLM 有值、OCR 也有值、但兩者不同 → 需要二次仲裁
+                                    conflicting = []  # [(field, ocr_val, llm_val), ...]
+                                    _ocr_source = {item["predicted_field"]: item["text"]
+                                                   for item in ctx.ocr_items
+                                                   if item.get("predicted_field") and item.get("text")}
+                                    for _ck in ALL_CHECK_FIELDS:
+                                        if _ck in still_empty:
+                                            continue  # 空欄位已由 still_empty 處理
+                                        _llm_v = llm_beam.get(_ck)
+                                        _ocr_v = _ocr_source.get(_ck)
+                                        if not _ocr_v or not _llm_v:
+                                            continue
+                                        # 正規化比較
+                                        _llm_str = _llm_v[0] if isinstance(_llm_v, list) and _llm_v else (_llm_v if isinstance(_llm_v, str) else None)
+                                        if _llm_str and _llm_str not in ("LLM沒有東西", "LLM看不出來") and str(_ocr_v).strip() != str(_llm_str).strip():
+                                            conflicting.append((_ck, str(_ocr_v).strip(), str(_llm_str).strip()))
+
                                     MAX_RETRY_FIELDS = 12
                                     print(f"  [DEBUG-RETRY] still_empty = {still_empty}")
-                                    print(f"  [DEBUG-RETRY] ALL_CHECK_FIELDS 檢查結果:")
+                                    print(f"  [DEBUG-RETRY] conflicting = {[(c[0], c[1], c[2]) for c in conflicting]}")
                                     for _dbg_k in ALL_CHECK_FIELDS:
                                         _dbg_rule = rule_beam.get(_dbg_k)
                                         _dbg_llm = llm_beam.get(_dbg_k)
                                         _dbg_in = _dbg_k in still_empty
                                         print(f"    {_dbg_k}: rule_beam={repr(_dbg_rule)}, llm_first={repr(_dbg_llm)}, 列入重試={_dbg_in}")
-                                    if still_empty and len(still_empty) <= MAX_RETRY_FIELDS:
-                                        print(f"  [LLM二次重試] 發現仍有缺漏 {still_empty}，發動針對性詢問...")
-                                        
+
+                                    needs_retry = (still_empty and len(still_empty) <= MAX_RETRY_FIELDS) or bool(conflicting)
+                                    if needs_retry:
+                                        if still_empty:
+                                            print(f"  [LLM二次重試] 發現缺漏 {still_empty}，衝突 {[c[0] for c in conflicting]}，發動針對性詢問...")
+                                        else:
+                                            print(f"  [LLM二次重試] 無缺漏但有 OCR/LLM 衝突 {[c[0] for c in conflicting]}，發動仲裁...")
+
                                         clean_rule_beam = {}
                                         for key, value in rule_beam.items():
                                             if key.startswith("_") or key in ("self_confidence", "note", "crop_index"):
@@ -2030,7 +2062,7 @@ class TableExtractor:
                                                 clean_rule_beam[key] = ["❗請重新掃描填補❗"] if key in LIST_FIELDS else "❗請重新掃描填補❗"
                                             else:
                                                 clean_rule_beam[key] = value
-                                                
+
                                         # 整理第一次 LLM 已明確否決的欄位，避免二次重試浪費 token 或亂填
                                         first_vetoed = []
                                         for _vk in still_empty:
@@ -2045,61 +2077,59 @@ class TableExtractor:
                                         retry_targets = [k for k in still_empty if k not in first_vetoed]
                                         vetoed_hint = f"\n⚠️ 以下欄位您已在上次確認「沒有東西」，本次不需要重答（保持空白即可）：{first_vetoed}\n" if first_vetoed else ""
 
+                                        # === 選擇題段落（給有衝突的欄位）===
+                                        choice_section = ""
+                                        if conflicting:
+                                            choice_lines = []
+                                            for _cf, _ocr_ans, _llm_ans in conflicting:
+                                                choice_lines.append(
+                                                    f"  • {_cf}\n"
+                                                    f"      參考A (OCR辨識): {_ocr_ans}\n"
+                                                    f"      參考B (LLM上次): {_llm_ans}\n"
+                                                    f"      → 請對照圖片判斷，直接填入正確的實際值（如 3-#8），勿填 A 或 B"
+                                                )
+                                            choice_section = (
+                                                "🔀 仲裁任務：以下欄位 OCR 與 LLM 答案有出入，請對照圖片裁定正確值\n"
+                                                "⚠️ 請直接在 JSON 中填入正確的實際數值（例如 '3-#8'、'150'），絕對不可填 'A' 或 'B'：\n"
+                                                + "\n".join(choice_lines) + "\n\n"
+                                            )
+
                                         prompt_retry = (
                                             "這是一次覆核任務。您正在解析單跨梁配筋詳圖。\n"
-                                            "在前一次的解析中，您遺漏了以下重要欄位（請特別關注）：\n"
-                                            f"  - 待補欄位: {', '.join(retry_targets)}\n"
-                                            f"{vetoed_hint}\n"
-                                            "請重新將注意力高度集中在圖片對應的角落與邊緣部位（例如 `_left` 務必看最左側邊界，`_right` 看最右側邊界）。\n"
-                                            "請輸出完整的 JSON。您可以直接把以下「已確定的資料」原封不動保留，但務必將標記為「❗請重新掃描填補❗」的欄位替換成您新找到的鋼筋資訊！\n"
-                                            "若您非常確定圖面上對應位置真的完全沒有標示這些資訊，請再次於該欄位填寫「LLM沒有東西」。\n\n"
-                                            "【圖面輔助線說明】\n"
+                                            + (f"在前一次的解析中，您遺漏了以下重要欄位（請特別關注）：\n"
+                                               f"  - 待補欄位: {', '.join(retry_targets)}\n"
+                                               f"{vetoed_hint}\n"
+                                               "請重新將注意力高度集中在圖片對應的角落與邊緣部位"  
+                                               "（例如 `_left` 務必看最左側邊界，`_right` 看最右側邊界）。\n"
+                                               "請輸出完整的 JSON。您可以直接把以下「已確定的資料」原封不動保留，"
+                                               "但務必將標記為「❗請重新掃描填補❗」的欄位替換成您新找到的鋼筋資訊！\n"
+                                               "若您非常確定圖面上對應位置真的完全沒有標示這些資訊，請再次填寫「LLM沒有東西」。\n\n"
+                                               if retry_targets else "")
+                                            + choice_section
+                                            + "【圖面輔助線說明】\n"
                                             "圖片中有 4 條系統自動繪製的「淺藍色（Cyan）分界線」，這些線是系統標註，不是梁圖本身的內容：\n"
                                             "  - 2 條垂直淺藍線：將梁水平分為「左段」、「中段」、「右段」\n"
                                             "  - 2 條水平淺藍線：將梁垂直分為「上緣」、「梁身」、「下緣」\n"
-                                            "  - 合計構成 3×3 九宮格，每個格子對應一個欄位，供您判斷文字大致屬於哪個區段，請以此格線作為參考依據，結合工程判斷進行歸類。\n\n"
+                                            "  - 合計構成 3×3 九宮格，每個格子對應一個欄位，請以此格線作為參考依據，結合工程判斷進行歸類。\n\n"
                                             "【解析規則】\n"
-                                            "1. 以淺藍格線對應欄位（極度重要）：圖中 2 條垂直線將梁分為左段/中段/右段，2 條水平線將梁分為上緣/梁身/下緣。\n"
-                                            "   - 文字位於「上緣左段」→ top_main_bars_left；「上緣中段」→ top_main_bars_mid；「上緣右段」→ top_main_bars_right。\n"
-                                            "   - 文字位於「梁身左段」→ stirrups_left；「梁身中段」→ stirrups_middle；「梁身右段」→ stirrups_right。\n"
-                                            "   - 文字位於「下緣左段」→ bottom_main_bars_left；「下緣中段」→ bottom_main_bars_mid；「下緣右段」→ bottom_main_bars_right。\n"
-                                            "   - 上緣/下緣四個角落的純數字為搭接長度：左上→lap_length_top_left，右上→lap_length_top_right，左下→lap_length_bottom_left，右下→lap_length_bottom_right。\n"
-                                            "2. ⚠️嚴禁混淆主筋與箍筋！主筋格式為 `N-#S` (如 3-#8)，絕不含 @。箍筋格式為 `N-#S@D` (如 13-#4@15)，一定含 @。\n"
-                                            "3. 🌟 若主筋有多排（看到兩個以上的鋼筋數量標示），請務必存成陣列 (例如: [\"3-#11\", \"14-#11\"])。\n"
-                                            "4. 搭接長度：圖面上方區域的純數字是上層搭接長度，下方區域的是下層搭接長度。\n"
-                                            "5. 梁編號與尺寸：若有要求您尋找，通常位於圖面上端或下端邊緣。\n\n"
-                                             "\n"
-                                             "【⚠️ 數字視覺混淆警告 — 本次重試這些欄位請特別注意！】\n"
-                                             "下列高混淆配對是誤判主因，請再看一眼後再填入：\n"
-                                             "  · 5 vs 6：5 頂部平直橫線；6 底部有封閉圓圈。\n"
-                                             "  · 1 vs 7：1 無橫線；7 頂端有水平橫線。\n"
-                                             "  · 1 vs 2：1 只有垂直線；2 底部有水平橫底。\n"
-                                             "  · 0 vs 8：0 是單圓；8 是雙圓中間有交叉。\n"
-                                             "  · 3 vs 8：3 左側開口；8 完全閉合。\n"
-                                             "  · 6 vs G：6 底有圓圈；G 右內有橫線。\n"
-                                             "  · 8 vs B：8 對稱雙圓；B 左側有垂直直線。\n"
-                                             "《計數再確認》底部有圓→可能 6 非 5；右側兩橫→可能 12 非 11。\n"
-                                                                                         "【⚠️ 數字視覺混淆警告 — 本次重試請特別注意！】\n"
-
-                                             "下列高混淆配對是誤判主因，請再看一眼後再填入：\n"
-
-                                             "  · 5 vs 6：5 頂部平直橫線；6 底部有封閉圓圈。\n"
-
-                                             "  · 1 vs 7：1 無橫線；7 頂端有水平橫線。\n"
-
-                                             "  · 1 vs 2：1 只有垂直線；2 底部有水平橫底。\n"
-
-                                             "  · 0 vs 8：0 是單圓；8 是雙圓中間有交叉。\n"
-
-                                             "  · 3 vs 8：3 左側開口；8 完全閉合。\n"
-
-                                             "  · 6 vs G：6 底有圓圈；G 右側內有橫線。\n"
-
-                                             "  · 8 vs B：8 對稱雙圓；B 左側有垂直直線。\n"
-
-                                             "【計數再確認】底部有圓→可能 6 非 5；右側兩橫→可能 12 非 11。\n"
-
-                                             f"【已確定資料 (請保留，並填補遺失處)】:\n{json.dumps(clean_rule_beam, ensure_ascii=False, indent=2)}"
+                                            "1. 以淺藍格線對應欄位（極度重要）：2 條垂直線分左段/中段/右段，2 條水平線分上緣/梁身/下緣。\n"
+                                            "   - 「上緣左段」→ top_main_bars_left；「上緣中段」→ top_main_bars_mid；「上緣右段」→ top_main_bars_right。\n"
+                                            "   - 「梁身左段」→ stirrups_left；「梁身中段」→ stirrups_middle；「梁身右段」→ stirrups_right。\n"
+                                            "   - 「下緣左段」→ bottom_main_bars_left；「下緣中段」→ bottom_main_bars_mid；「下緣右段」→ bottom_main_bars_right。\n"
+                                            "   - 四個角落純數字為搭接長度：左上→lap_length_top_left，右上→lap_length_top_right，左下→lap_length_bottom_left，右下→lap_length_bottom_right。\n"
+                                            "2. ⚠️嚴禁混淆主筋與箍筋！主筋格式 `N-#S`（無 @）；箍筋格式 `N-#S@D`（含 @）。\n"
+                                            "3. 🌟 若主筋有多排，請存成陣列（例如: [\"3-#11\", \"14-#11\"]）。\n"
+                                            "4. 搭接長度：上方區域純數字→上層搭接；下方區域純數字→下層搭接。\n\n"
+                                            "【⚠️ 數字視覺混淆警告 — 本次重試請特別注意！】\n"
+                                            "  · 5 vs 6：5 頂部平直橫線；6 底部有封閉圓圈。\n"
+                                            "  · 0 vs 8：0 是單圓；8 是雙圓中間有交叉。\n"
+                                            "  · 1 vs 7：1 無橫線；7 頂端有水平橫線。\n"
+                                            "  · 1 vs 2：1 只有垂直線；2 底部有水平橫底。\n"
+                                            "  · 3 vs 8：3 左側開口；8 完全閉合。\n"
+                                            "  · 6 vs G：6 底有圓圈；G 右內有橫線。\n"
+                                            "  · 8 vs B：8 對稱雙圓；B 左側有垂直直線。\n"
+                                            "  ⟹ 底部有封閉圓→極可能 6（非 5）；右側兩橫→極可能 12（非 11）。\n\n"
+                                            f"【已確定資料 (請保留，並填補/仲裁遺失或衝突處)】:\n{json.dumps(clean_rule_beam, ensure_ascii=False, indent=2)}"
                                         )
                                         retry_config = genai.GenerationConfig(
                                             response_mime_type="application/json",
@@ -2144,15 +2174,15 @@ class TableExtractor:
                                             
                                             # 陣列欄位：已有值就不追加 (信任 LLM 或規則引擎的判定)
                                             if pk in LIST_FIELDS and isinstance(v, list) and v:
-                                                # 但如果裡面全是 LLM 標記、空字串或 "空"，視為空
-                                                real_vals = [x for x in v if str(x).strip() not in ("LLM沒有東西", "LLM看不出來", "", "空")]
+                                                # 但如果裡面全是 LLM 標記，視為空
+                                                real_vals = [x for x in v if x not in ("LLM沒有東西", "LLM看不出來")]
                                                 if real_vals:
-                                                    print(f"  [OCR Fallback] {pk} 已有實質內容 {real_vals}，略過: '{item.get('text', '')}'")
+                                                    print(f"  [OCR Fallback] {pk} 已有值 {real_vals}，略過: '{item.get('text', '')}'")
                                                     continue
                                             
                                             # 字串欄位：已有值就不覆蓋
-                                            if isinstance(v, str) and v and str(v).strip() not in ("LLM沒有東西", "LLM看不出來", "", "空"):
-                                                print(f"  [OCR Fallback] {pk} 已有實質內容 '{v}'，略過: '{item.get('text', '')}'")
+                                            if isinstance(v, str) and v and v not in ("LLM沒有東西", "LLM看不出來"):
+                                                print(f"  [OCR Fallback] {pk} 已有值 '{v}'，略過: '{item.get('text', '')}'")
                                                 continue
                                             
                                             # 欄位為空或只有 LLM 標記 → 執行兜底
