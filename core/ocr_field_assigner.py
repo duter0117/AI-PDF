@@ -43,8 +43,13 @@ RE_BEAM_PREFIX = re.compile(
 
 def classify_text(text: str) -> FormatType:
     """根據文字格式分類成工程標註類型"""
-    # 移除頭尾雜訊，包含括號 (避免 (50x70) 無法匹配)
-    s = text.strip().strip('-_.= —–~()（）[]【】')
+    # 移除頭尾非括號雜訊
+    s = text.strip().strip('-_.= \u2014\u2013~')
+    # 成對括號才刪除：左括號類 + 右括號類任意配對（容許 OCR 混淆 ( 和 （）
+    _LEFT_BRACKETS  = set('(（[【')
+    _RIGHT_BRACKETS = set(')）]】')
+    while len(s) >= 2 and s[0] in _LEFT_BRACKETS and s[-1] in _RIGHT_BRACKETS:
+        s = s[1:-1].strip()
     if not s or len(s) < 1:
         return FormatType.UNKNOWN
     

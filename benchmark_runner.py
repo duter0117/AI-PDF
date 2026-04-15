@@ -582,12 +582,131 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
         
         raw_llm_json = pred.get("_raw_llm", "")
         raw_llm_retry_json = pred.get("_raw_llm_retry", "")
-        
+
+        def _render_llm_grid(json_str, label, icon, bg, border, header_color, val_color):
+            """將 LLM 回覆 JSON 渲染為九宮格 + NOTE 獨立欄位"""
+            try:
+                data = json_mod.loads(json_str)
+            except Exception:
+                return (
+                    f"<div style='margin-top:10px;padding:10px;background:{bg};"
+                    f"border:1px solid {border};border-radius:4px;'>"
+                    f"<strong style='color:{header_color};font-size:0.8rem;'>{icon} {label}</strong>"
+                    f"<pre style='margin:6px 0 0;font-size:0.75rem;color:{val_color};"
+                    f"white-space:pre-wrap;word-break:break-all;'>{html_mod.escape(json_str)}</pre></div>"
+                )
+
+            def _fv(key):
+                v = data.get(key, "")
+                if isinstance(v, list):
+                    clean = [x for x in v if x not in ("LLM沒有東西", "LLM看不出來")]
+                    return ", ".join(clean) if clean else "(空)"
+                s = str(v).strip() if v else ""
+                return s if s and s not in ("LLM沒有東西", "LLM看不出來") else "(空)"
+
+            def _cell(label_txt, key, extra_style=""):
+                val = html_mod.escape(_fv(key))
+                is_empty = val == "(空)"
+                opacity = "0.45" if is_empty else "1"
+                return (
+                    f"<div style='background:#1e293b;border:1px solid #334155;border-radius:4px;"
+                    f"padding:6px 8px;{extra_style};opacity:{opacity}'>"
+                    f"<div style='font-size:0.6rem;color:#64748b;font-weight:600;"
+                    f"text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px'>{label_txt}</div>"
+                    f"<div style='font-size:0.78rem;color:{val_color};word-break:break-all'>{val}</div>"
+                    f"</div>"
+                )
+
+            note_val = html_mod.escape(str(data.get("note", "") or ""))
+            beam_id_val = html_mod.escape(_fv("beam_id"))
+            dim_val = html_mod.escape(_fv("dimensions"))
+
+            grid_html = (
+                f"<div style='margin-top:6px;'>"
+                # header row: beam_id + dimensions
+                f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px'>"
+                f"{_cell('beam_id', 'beam_id')}"
+                f"{_cell('dimensions', 'dimensions')}"
+                f"</div>"
+                # 九宮格：上層主筋
+                f"<div style='font-size:0.6rem;color:#475569;text-align:center;margin:4px 0 2px;"
+                f"text-transform:uppercase;letter-spacing:1px'>▲ 上層主筋 TOP BARS</div>"
+                f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:4px'>"
+                f"{_cell('左', 'top_main_bars_left')}"
+                f"{_cell('中', 'top_main_bars_mid')}"
+                f"{_cell('右', 'top_main_bars_right')}"
+                f"</div>"
+                # 九宮格：箍筋
+                f"<div style='font-size:0.6rem;color:#475569;text-align:center;margin:4px 0 2px;"
+                f"text-transform:uppercase;letter-spacing:1px'>↔ 箍筋 STIRRUPS</div>"
+                f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:4px'>"
+                f"{_cell('左', 'stirrups_left')}"
+                f"{_cell('中', 'stirrups_middle')}"
+                f"{_cell('右', 'stirrups_right')}"
+                f"</div>"
+                # 九宮格：下層主筋
+                f"<div style='font-size:0.6rem;color:#475569;text-align:center;margin:4px 0 2px;"
+                f"text-transform:uppercase;letter-spacing:1px'>▼ 下層主筋 BOTTOM BARS</div>"
+                f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:4px'>"
+                f"{_cell('左', 'bottom_main_bars_left')}"
+                f"{_cell('中', 'bottom_main_bars_mid')}"
+                f"{_cell('右', 'bottom_main_bars_right')}"
+                f"</div>"
+                # face_bars + lap_length
+                f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin-bottom:4px'>"
+                f"{_cell('腰筋', 'face_bars')}"
+                f"{_cell('搭接↑左', 'lap_length_top_left')}"
+                f"{_cell('搭接↑右', 'lap_length_top_right')}"
+                f"</div>"
+                f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin-bottom:6px'>"
+                f"<div></div>"
+                f"{_cell('搭接↓左', 'lap_length_bottom_left')}"
+                f"{_cell('搭接↓右', 'lap_length_bottom_right')}"
+                f"</div>"
+                # NOTE 獨立欄位
+                f"<div style='background:#0f172a;border:1px solid #1e3a5f;border-radius:4px;"
+                f"padding:6px 10px;'>"
+                f"<div style='font-size:0.6rem;color:#64748b;font-weight:600;"
+                f"text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px'>📝 Note</div>"
+                f"<div style='font-size:0.75rem;color:#94a3b8'>{note_val if note_val else '(無)'}</div>"
+                f"</div>"
+                f"</div>"  # end grid_html wrapper
+            )
+
+            # 原始 JSON 可展開查看
+            raw_detail = (
+                f"<details style='margin-top:4px'>"
+                f"<summary style='font-size:0.65rem;color:#475569;cursor:pointer;padding:2px 4px'>"
+                f"查看原始 JSON</summary>"
+                f"<pre style='font-size:0.68rem;color:#64748b;white-space:pre-wrap;"
+                f"word-break:break-all;padding:6px;margin:0'>{html_mod.escape(json_str)}</pre>"
+                f"</details>"
+            )
+
+            return (
+                f"<div style='margin-top:10px;padding:10px;background:{bg};"
+                f"border:1px solid {border};border-radius:6px;'>"
+                f"<strong style='color:{header_color};font-size:0.8rem;'>{icon} {label}</strong>"
+                f"{grid_html}"
+                f"{raw_detail}"
+                f"</div>"
+            )
+
+        import json as json_mod
+
         raw_llm_html = ""
         if raw_llm_json:
-            raw_llm_html += f"<div style='margin-top:10px; padding:10px; background:#0f172a; border: 1px solid #334155; border-radius:4px;'><strong style='color:#94a3b8; font-size:0.8rem;'>🤖 LLM 原始回覆 (第一次):</strong><pre style='margin:6px 0 0; font-size:0.75rem; color:#cbd5e1; white-space:pre-wrap; word-break: break-all;'>{html_mod.escape(raw_llm_json)}</pre></div>"
+            raw_llm_html += _render_llm_grid(
+                raw_llm_json,
+                "LLM 原始回覆 (第一次)",
+                "🤖", "#0b1829", "#1e3a5f", "#94a3b8", "#cbd5e1"
+            )
         if raw_llm_retry_json:
-            raw_llm_html += f"<div style='margin-top:10px; padding:10px; background:#451a03; border: 1px solid #78350f; border-radius:4px;'><strong style='color:#fbbf24; font-size:0.8rem;'>🔄 LLM 二次重試回覆 (針對缺漏補齊):</strong><pre style='margin:6px 0 0; font-size:0.75rem; color:#fef3c7; white-space:pre-wrap; word-break: break-all;'>{html_mod.escape(raw_llm_retry_json)}</pre></div>"
+            raw_llm_html += _render_llm_grid(
+                raw_llm_retry_json,
+                "LLM 二次重試回覆 (針對缺漏補齊)",
+                "🔄", "#1a0f00", "#78350f", "#fbbf24", "#fef3c7"
+            )
         
         return f'''<div class="{card_class}">
                 <div class="beam-header">

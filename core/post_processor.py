@@ -83,6 +83,25 @@ def apply_structural_rules(beam_dict: dict) -> dict:
         for k in stirrup_keys:
             b[k] = val
 
+    # === 規則 4: lap_length 格式防護 — 必須是 2~3 位純數字 ===
+    # 作為最終防線：清除所有非數字的搭接長度值（如 "LL", "N/A", "LLcm" 等）
+    LAP_LENGTH_KEYS = [
+        "lap_length_top_left", "lap_length_top_right",
+        "lap_length_bottom_left", "lap_length_bottom_right"
+    ]
+    for lk in LAP_LENGTH_KEYS:
+        v = b.get(lk, "")
+        if not isinstance(v, str) or not v:
+            continue
+        # 去掉常見單位後驗證
+        cleaned = v.strip().replace("cm", "").replace("CM", "").replace("Cm", "").strip()
+        if not re.match(r'^\d{2,3}$', cleaned):
+            print(f"[後處理] ⚠️ 格式防護：{lk} 值 '{v}' 不是純數字，已清空")
+            b[lk] = ""
+        elif cleaned != v.strip():
+            # 去掉單位後是合法數字，保留乾淨版本
+            b[lk] = cleaned
+
     return b
 
 def is_empty_beam(beam_dict: dict) -> bool:
