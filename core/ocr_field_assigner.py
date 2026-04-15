@@ -158,13 +158,14 @@ HIGH_CONF_THRESHOLD = 0.95
 # ================================================================
 # 主函數
 # ================================================================
-def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
+def assign_fields(ocr_items: list, ctx, crop_index: int = None) -> Tuple[dict, list]:
     """
     規則引擎主函數。
     
     Args:
         ocr_items: OCR 結果列表 (每筆含 text, conf, cx, cy, pos_label 等)
         ctx: CropContext (含 grid 邊界資訊)
+        crop_index: 片段編號 (供 debug log 使用)
     
     Returns:
         (beam_dict, low_conf_items)
@@ -207,7 +208,7 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
         if conf < HIGH_CONF_THRESHOLD:
             contested_positions.add(pos)
     if contested_positions:
-        print(f"  [Pre-scan] 以下方位存在低信心項目，將全數送 LLM: {contested_positions}")
+        assignments.append(f"  [Pre-scan] 以下方位存在低信心項目，將全數送 LLM: {contested_positions}")
     
     for item in ocr_items:
         text = item["text"].strip()
@@ -364,6 +365,11 @@ def assign_fields(ocr_items: list, ctx) -> Tuple[dict, list]:
     beam["self_confidence"] = int((high_conf_count / max(total_items, 1)) * 100)
     
     # 輸出 debug log
+    if crop_index is not None:
+        print(f"\n{'='*60}")
+        print(f"📦 片段 {crop_index} 開始處理 | 判讀梁編號: {beam.get('beam_id', '???')}")
+        print(f"{'='*60}")
+        
     print(f"[規則引擎] 共 {total_items} 筆 OCR → {high_conf_count} 筆免 LLM 直填, {len(low_conf_items)} 筆交給 LLM 確認")
     for a in assignments:
         print(f"  {a}")
