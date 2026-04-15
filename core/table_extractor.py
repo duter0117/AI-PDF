@@ -2033,6 +2033,15 @@ class TableExtractor:
                                         _ocr_v = _ocr_source.get(_ck)
                                         if not _ocr_v or not _llm_v:
                                             continue
+                                        # LLM 回覆為空字串/空陣列 = 我們叫它不要覆蓋 OCR 保護欄位，不視為衝突
+                                        # （若列入衝突會暗示 LLM「這裡有問題」，反而誤導）
+                                        _llm_is_blank = False
+                                        if isinstance(_llm_v, str) and not _llm_v.strip():
+                                            _llm_is_blank = True
+                                        elif isinstance(_llm_v, list) and all(not str(x).strip() for x in _llm_v):
+                                            _llm_is_blank = True
+                                        if _llm_is_blank:
+                                            continue
                                         # 正規化比較
                                         _llm_str = _llm_v[0] if isinstance(_llm_v, list) and _llm_v else (_llm_v if isinstance(_llm_v, str) else None)
                                         if _llm_str and _llm_str not in ("LLM沒有東西", "LLM看不出來") and str(_ocr_v).strip() != str(_llm_str).strip():
