@@ -1005,17 +1005,16 @@ class TableExtractor:
                 right_cols = [cx for cx in ctx.all_cols_sorted if cx >= center_x]
                 if left_cols:
                     if top_edge:
-                        # 因為梁下緣有時會有「牛腿」(haunch) 導致接觸點不準或錯位，
-                        # 所以選擇距離「梁上緣左端點」最近的那條柱線。
-                        ctx.left_col = min(left_cols, key=lambda cx: abs(cx - top_edge.x))
+                        # 梁上緣線從左柱畫到右柱，其左端點即為左柱位。
+                        # 不從候選池挑選，因為候選池可能含有牛腿 (haunch) 或截面標記等雜線。
+                        ctx.left_col = top_edge.x
                     else:
                         ctx.left_col = max(left_cols)
                         
                 if right_cols:
                     if top_edge:
-                        # 因為梁下緣有時會有「牛腿」(haunch) 導致接觸點不準或錯位，
-                        # 所以選擇距離「梁上緣右端點」最近的那條柱線。
-                        ctx.right_col = min(right_cols, key=lambda cx: abs(cx - (top_edge.x + top_edge.w)))
+                        # 梁上緣線從左柱畫到右柱，其右端點即為右柱位。
+                        ctx.right_col = top_edge.x + top_edge.w
                     else:
                         ctx.right_col = min(right_cols)
                     

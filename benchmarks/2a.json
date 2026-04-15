@@ -1,0 +1,362 @@
+{
+  "_comment": "由 --init Web Editor 校正",
+  "pdf_file": "2a.pdf",
+  "page_num": 0,
+  "expected_beam_count": 10,
+  "expected_split_count": 10,
+  "cv_params": {
+    "dilation_iterations": 2,
+    "min_area": 100000,
+    "padding_bottom": 160,
+    "hough_threshold": 95,
+    "enable_decomp": true,
+    "voting_rounds": 1
+  },
+  "beams": [
+    {
+      "beam_id": "B4F FB3-4",
+      "dimensions": "110x250",
+      "top_main_bars_left": [
+        "14-#11",
+        "2-#11"
+      ],
+      "top_main_bars_mid": [
+        "14-#11",
+        "2-#11"
+      ],
+      "top_main_bars_right": [
+        "12-#11"
+      ],
+      "bottom_main_bars_left": [
+        "13-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "12-#11"
+      ],
+      "bottom_main_bars_right": [
+        "9-#11",
+        "14-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "150",
+      "lap_length_bottom_left": "230",
+      "lap_length_bottom_right": "240"
+    },
+    {
+      "beam_id": "B4F FB3-5",
+      "dimensions": "110x250",
+      "top_main_bars_left": [
+        "12-#11"
+      ],
+      "top_main_bars_mid": [
+        "14-#11",
+        "5-#11"
+      ],
+      "top_main_bars_right": [
+        "14-#11",
+        "14-#11",
+        "7-#11"
+      ],
+      "bottom_main_bars_left": [
+        "9-#11",
+        "14-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "2-#11",
+        "14-#11"
+      ],
+      "bottom_main_bars_right": [
+        "14-#11",
+        "14-#11",
+        "14-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "155",
+      "lap_length_top_right": "240",
+      "lap_length_bottom_left": "240",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FB3-6",
+      "dimensions": "110x250",
+      "top_main_bars_left": [
+        "14-#11",
+        "14-#11",
+        "7-#11"
+      ],
+      "top_main_bars_mid": [
+        "14-#11",
+        "13-#11"
+      ],
+      "top_main_bars_right": [
+        "8-#11"
+      ],
+      "bottom_main_bars_left": [
+        "14-#11",
+        "14-#11",
+        "14-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "13-#11",
+        "14-#11"
+      ],
+      "bottom_main_bars_right": [
+        "5-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "2-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "240",
+      "lap_length_top_right": "65",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FB4-1",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "13-#11"
+      ],
+      "top_main_bars_mid": [
+        "18-#11",
+        "18-#11",
+        "4-#11"
+      ],
+      "top_main_bars_right": [
+        "18-#11",
+        "18-#11",
+        "8-#11"
+      ],
+      "bottom_main_bars_left": [
+        "6-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "14-#11"
+      ],
+      "bottom_main_bars_right": [
+        "5-#11",
+        "18-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "110",
+      "lap_length_top_right": "275",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FB4-2",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "18-#11",
+        "18-#11",
+        "8-#11"
+      ],
+      "top_main_bars_mid": [
+        "18-#11",
+        "10-#11"
+      ],
+      "top_main_bars_right": [
+        "12-#11"
+      ],
+      "bottom_main_bars_left": [
+        "5-#11",
+        "18-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "16-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "275",
+      "lap_length_top_right": "155",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": "240"
+    },
+    {
+      "beam_id": "B4F FB4-3a",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "12-#11"
+      ],
+      "top_main_bars_mid": [
+        "12-#11"
+      ],
+      "top_main_bars_right": [
+        "12-#11"
+      ],
+      "bottom_main_bars_left": [
+        "6-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "6-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "#5@10",
+      "stirrups_middle": "#5@10",
+      "stirrups_right": "#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FB4-3b",
+      "dimensions": "140x310",
+      "top_main_bars_left": [
+        "8-#11"
+      ],
+      "top_main_bars_mid": [
+        "17-#11"
+      ],
+      "top_main_bars_right": [
+        "13-#11"
+      ],
+      "bottom_main_bars_left": [
+        "14-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "8-#11"
+      ],
+      "bottom_main_bars_right": [
+        "12-#11"
+      ],
+      "stirrups_left": "2-#5@15",
+      "stirrups_middle": "2-#5@15",
+      "stirrups_right": "2-#5@15",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "150",
+      "lap_length_top_right": "150",
+      "lap_length_bottom_left": "230",
+      "lap_length_bottom_right": "230"
+    },
+    {
+      "beam_id": "B4F FB4-4",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "10-#11"
+      ],
+      "top_main_bars_mid": [
+        "10-#11"
+      ],
+      "top_main_bars_right": [
+        "10-#11"
+      ],
+      "bottom_main_bars_left": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "2-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "#5@10",
+      "stirrups_middle": "#5@10",
+      "stirrups_right": "#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "",
+      "lap_length_top_right": "10",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": "18"
+    },
+    {
+      "beam_id": "B4F FB4-5",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "10-#11"
+      ],
+      "top_main_bars_mid": [
+        "18-#11",
+        "8-#11"
+      ],
+      "top_main_bars_right": [
+        "18-#11",
+        "16-#11"
+      ],
+      "bottom_main_bars_left": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "2-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "12-#11",
+        "18-#11",
+        "18-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "8-#6 (E.F.)",
+      "lap_length_top_left": "155",
+      "lap_length_top_right": "240",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    },
+    {
+      "beam_id": "B4F FB4-6",
+      "dimensions": "140x250",
+      "top_main_bars_left": [
+        "18-#11",
+        "16-#11"
+      ],
+      "top_main_bars_mid": [
+        "18-#11",
+        "9-#11"
+      ],
+      "top_main_bars_right": [
+        "10-#11"
+      ],
+      "bottom_main_bars_left": [
+        "12-#11",
+        "18-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_mid": [
+        "7-#11",
+        "18-#11"
+      ],
+      "bottom_main_bars_right": [
+        "6-#11"
+      ],
+      "stirrups_left": "3-#5@10",
+      "stirrups_middle": "3-#5@10",
+      "stirrups_right": "3-#5@10",
+      "face_bars": "6-#6 (E.F.)",
+      "lap_length_top_left": "240",
+      "lap_length_top_right": "65",
+      "lap_length_bottom_left": "",
+      "lap_length_bottom_right": ""
+    }
+  ]
+}
