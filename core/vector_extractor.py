@@ -336,7 +336,7 @@ class VectorExtractor:
         pre_nms_len = len(pre_nms_results)
         
         # NMS 去重後，再按 y, x 排序符合人類閱讀習慣
-        results, nms_drops = self._nms_bboxes(pre_nms_results, iou_thresh=0.5)
+        results, nms_drops = self._nms_bboxes(pre_nms_results, iou_thresh=0.4)
         post_nms_len = len(results)
         nms_dropped = pre_nms_len - post_nms_len
         
@@ -471,7 +471,7 @@ class VectorExtractor:
         # 因為標題往下延伸後，極有可能侵犯到下方的其他母塊，
         # 此處再跑一次以 IoA 為基礎的貪婪融合，將重疊區塊合體。
         original_len = len(results)
-        results, post_nms_drops = self._nms_bboxes(results, iou_thresh=0.5)
+        results, post_nms_drops = self._nms_bboxes(results, iou_thresh=0.4)
         for nd in post_nms_drops:
             dropped_for_save.append(("nms_post_reclaim", nd))
             
@@ -483,6 +483,16 @@ class VectorExtractor:
         pw, ph = page.rect.width, page.rect.height
         self._content_trim_bboxes(results, thresh, pw, ph,
                                   pad_x=60, pad_y=20, trim_bottom=False)
+        
+        # === Phase 3.6.7: 第三輪 NMS (Post-Trim Dedup) ===
+        # Content Trim 收緊邊界後，原本因雜訊向不同方向膨脹（一張左右、一張上下）
+        # 而未觸發融合的重疊母塊，此時 IoA 會大幅提高，可以被正確合併。
+        pre_trim_nms_len = len(results)
+        results, post_trim_drops = self._nms_bboxes(results, iou_thresh=0.4)
+        for nd in post_trim_drops:
+            dropped_for_save.append(("nms_post_trim", nd))
+        if len(results) < pre_trim_nms_len:
+            print(f"[Phase 3.6.7] Post-Trim NMS: 收緊後偵測到重疊，{pre_trim_nms_len} → {len(results)} 個母塊")
         # ==============================================================
 
         # === Phase 3.8: 連續跨水平分解 (Continuous Beam Decomposition) ===

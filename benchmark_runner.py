@@ -1296,12 +1296,8 @@ async def init_ground_truth(bench_dir, graph, filter_str="", overwrite=False, cv
         print("❌ benchmarks/ 找不到任何 PDF 檔案")
         return
 
-    # 執行預跑前強制清空舊有的 crops 快取，避免被上一次的殘留污染
-    import shutil
-    crops_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crops")
-    if os.path.exists(crops_dir):
-        shutil.rmtree(crops_dir, ignore_errors=True)
-    os.makedirs(crops_dir, exist_ok=True)
+    from core.archiver import create_run_dir, archive_item
+    # 此處保留，改由外部傳入 run_dir
     print("🧹 預跑前已清空 crops/ 快取資料夾")
 
     all_gt = []  # (json_path, gt_data)
@@ -1372,10 +1368,14 @@ async def init_ground_truth(bench_dir, graph, filter_str="", overwrite=False, cv
             "beams": clean_beams
         }
 
-        # 先存一份原始版本
+        # 先存一份原始版本到 benchmarks/ 供修改
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(gt_data, f, ensure_ascii=False, indent=2)
         print(f"📄 已儲存初始版本: {json_path}")
+        
+        # 自動存入 finished 封存區
+        if getattr(graph, "run_dir", None):
+            archive_item(graph.run_dir, base_name + ".pdf", pdf_bytes, gt_data)
 
         all_gt.append((json_path, gt_data))
 
@@ -1418,7 +1418,10 @@ async def main():
 
     # === --init 模式 ===
     if args.init or args.init_all:
+        from core.archiver import create_run_dir
+        run_dir = create_run_dir("預跑")
         graph = build_graph()
+        graph.run_dir = run_dir # 黑魔法把屬性偷傳過去
         await init_ground_truth(bench_dir, graph, filter_str=args.filter, overwrite=args.init_all)
         return
 
@@ -1441,6 +1444,8 @@ async def main():
     os.makedirs(crops_dir, exist_ok=True)
 
     print(f"🔍 找到 {len(json_files)} 個測試案例")
+    from core.archiver import create_run_dir, archive_item, archive_report
+    run_dir = create_run_dir("評測")
     graph = build_graph()
     reports = []
 
@@ -1460,6 +1465,12 @@ async def main():
         try:
             r = await evaluate_single(pdf_path, gt, graph)
             reports.append(r)
+            
+            # 把當下的 crop/debug_full_pdf 等存進 finished
+            with open(pdf_path, "rb") as f:
+                pdf_bytes_tmp = f.read()
+            archive_item(run_dir, pdf_name, pdf_bytes_tmp, r)
+            
         except Exception as e:
             print(f"❌ {pdf_name} 失敗: {e}")
             import traceback; traceback.print_exc()
@@ -1478,6 +1489,7 @@ async def main():
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
     print(f"📊 HTML 報告已產生: {html_path}")
+    archive_report(run_dir, html_path)
 
     # 同時儲存 JSON
     json_result_path = os.path.join(results_dir, f"benchmark_{ts}.json")

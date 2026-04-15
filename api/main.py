@@ -50,6 +50,12 @@ async def run_extraction_workflow(task_id: str, pdf_bytes: bytes, page_num: int,
             "cv_params": cv_params
         })
         final_output = result.get("final_output", {})
+        
+        from core.archiver import create_run_dir, archive_item
+        run_dir = create_run_dir("API非同步")
+        # 前端上傳通常沒有好檔名，我們用個預設加上部分 task_id 作識別
+        archive_item(run_dir, f"api_upload_{task_id[:6]}.pdf", pdf_bytes, final_output)
+
         complete_task(task_id, final_output)
     except Exception as e:
         fail_task(task_id, str(e))
@@ -122,7 +128,15 @@ async def extract_drawings(
         "task_id": None,
         "cv_params": {}
     })
-    return result.get("final_output", {"error": "Pipeline failed"})
+    
+    final_output = result.get("final_output", {"error": "Pipeline failed"})
+    
+    from core.archiver import create_run_dir, archive_item
+    run_dir = create_run_dir("API同步")
+    original_name = file.filename if file.filename else "api_upload.pdf"
+    archive_item(run_dir, original_name, pdf_bytes, final_output)
+    
+    return final_output
 
 @app.get("/health")
 def health_check():

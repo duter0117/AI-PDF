@@ -197,8 +197,8 @@ class TableExtractor:
         bottom_bound = ctx.beam_bottom if ctx.beam_bottom is not None else h * (2.0/3.0)
         
         beam_len = right_bound - left_bound
-        # 梁長度範圍中間 40% (即左右各留 30%)
-        mid_x_start = left_bound + beam_len * 0.3
+        # 特殊排版對策：大部分圖面文字偏右，因此左區塊放寬至 40%，中 30%，右 30%
+        mid_x_start = left_bound + beam_len * 0.4
         mid_x_end = right_bound - beam_len * 0.3
         
         ctx.grid_mid_x_start = mid_x_start
@@ -866,6 +866,11 @@ class TableExtractor:
             vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vert_kernel)
             v_contours, _ = cv2.findContours(vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
+            # 先提取出確認的上下邊緣實體，用來抓 X 軸的端點位置
+            h_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
+            top_edge = next((l for l in h_edges if abs(l.y - beam_top) <= 3), None)
+            bot_edge = next((l for l in h_edges if abs(l.y - beam_bottom) <= 3), None)
+            
             detected_x_cols = []
             for cnt in v_contours:
                 x, y, w, h = cv2.boundingRect(cnt)
@@ -885,10 +890,25 @@ class TableExtractor:
                 touches_bot = abs(y - beam_bottom) <= 3 and (y + h) > beam_bottom + 20
                 crosses_top = (y < beam_top - 10) and ((y + h) > beam_top + 15)
                 crosses_bot = ((y + h) > beam_bottom + 10) and (y < beam_bottom - 15)
+
+                # 端點檢查邏輯：只有靠近水平邊線端點的垂直線才算有效的柱線
+                near_top_endpoint = False
+                if top_edge:
+                    near_top_endpoint = abs(x - top_edge.x) <= 40 or abs(x - (top_edge.x + top_edge.w)) <= 40
+                
+                near_bot_endpoint = False
+                if bot_edge:
+                    near_bot_endpoint = abs(x - bot_edge.x) <= 40 or abs(x - (bot_edge.x + bot_edge.w)) <= 40
+
+                # 必須同時滿足 Y 軸的幾何接觸與 X 軸的端點鄰近
+                touches_top = touches_top and near_top_endpoint
+                crosses_top = crosses_top and near_top_endpoint
+                touches_bot = touches_bot and near_bot_endpoint
+                crosses_bot = crosses_bot and near_bot_endpoint
                 
                 passed = touches_top or touches_bot or crosses_top or crosses_bot
                 
-                reject_reason = "幾何不符" if not passed else ""
+                reject_reason = "幾何不符或遠離端點" if not passed else ""
                 lx, rx = x, x
                 is_leader = False
                 free_y = 0
@@ -928,9 +948,9 @@ class TableExtractor:
                                 x1, x2 = item["min_x"], item["max_x"]
                                 y1, y2 = item["min_y"], item["max_y"]
                                 
-                                near_tip = (x1 - 35 <= x <= x2 + 35) and (y1 - 35 <= free_y <= y2 + 35)
-                                near_left = (x1 - 35 <= lx <= x2 + 35) and (y1 - 35 <= free_y <= y2 + 35)
-                                near_right = (x1 - 35 <= rx <= x2 + 35) and (y1 - 35 <= free_y <= y2 + 35)
+                                near_tip = (x1 - 60 <= x <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
+                                near_left = (x1 - 60 <= lx <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
+                                near_right = (x1 - 60 <= rx <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
                                 
                                 if near_tip or near_left or near_right:
                                     is_leader = True
@@ -977,13 +997,27 @@ class TableExtractor:
             ctx.all_cols_sorted = deduped
                     
             if ctx.all_cols_sorted:
-                center_x = img_enhanced.width / 2
+                if beam_id_texts:
+                    center_x = sum(item["cx"] for item in beam_id_texts) / len(beam_id_texts)
+                else:
+                    center_x = img_enhanced.width / 2
                 left_cols = [cx for cx in ctx.all_cols_sorted if cx < center_x]
                 right_cols = [cx for cx in ctx.all_cols_sorted if cx >= center_x]
                 if left_cols:
-                    ctx.left_col = max(left_cols)
+                    if top_edge:
+                        # 因為梁下緣有時會有「牛腿」(haunch) 導致接觸點不準或錯位，
+                        # 所以選擇距離「梁上緣左端點」最近的那條柱線。
+                        ctx.left_col = min(left_cols, key=lambda cx: abs(cx - top_edge.x))
+                    else:
+                        ctx.left_col = max(left_cols)
+                        
                 if right_cols:
-                    ctx.right_col = min(right_cols)
+                    if top_edge:
+                        # 因為梁下緣有時會有「牛腿」(haunch) 導致接觸點不準或錯位，
+                        # 所以選擇距離「梁上緣右端點」最近的那條柱線。
+                        ctx.right_col = min(right_cols, key=lambda cx: abs(cx - (top_edge.x + top_edge.w)))
+                    else:
+                        ctx.right_col = min(right_cols)
                     
             # 缺柱線完美降級 (Fallback): 若無法確認左或右柱緣，提取 h_beam_edge 兩端當作柱線
             if ctx.left_col is None or ctx.right_col is None:
@@ -1585,6 +1619,44 @@ class TableExtractor:
                         with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
                             _f_heal.write(msg + "\n\n")
                 cv_bboxes = valid_again
+                
+                # === Pass 2 NMS: 圖塊重疊度去重 ===
+                # 母塊階段若因雜訊膨脹方向不同而未成功合併，到此時 bbox 已是最終形態，
+                # 重疊的 crop 在這裡可以被精確偵測並融合，避免同一根梁被送進 LLM 兩次。
+                if len(cv_bboxes) >= 2:
+                    sorted_boxes = sorted(cv_bboxes, key=lambda b: (b[2]-b[0])*(b[3]-b[1]), reverse=True)
+                    keep = []
+                    nms_dropped_pass2 = []
+                    for bbox in sorted_boxes:
+                        suppressed = False
+                        for k in keep:
+                            inter_x0 = max(bbox[0], k[0])
+                            inter_y0 = max(bbox[1], k[1])
+                            inter_x1 = min(bbox[2], k[2])
+                            inter_y1 = min(bbox[3], k[3])
+                            inter = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
+                            area_small = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                            ioa = inter / (area_small + 1e-6)
+                            if ioa > 0.4:
+                                suppressed = True
+                                # 融合：把小框撐進大框
+                                k[0] = min(k[0], bbox[0])
+                                k[1] = min(k[1], bbox[1])
+                                k[2] = max(k[2], bbox[2])
+                                k[3] = max(k[3], bbox[3])
+                                break
+                        if not suppressed:
+                            keep.append(bbox)
+                        else:
+                            nms_dropped_pass2.append(bbox)
+                    
+                    if len(nms_dropped_pass2) > 0:
+                        keep.sort(key=lambda b: (b[1], b[0]))
+                        msg = f"[Pass2 NMS] 圖塊重疊去重: {len(cv_bboxes)} → {len(keep)} 個 (融合掉 {len(nms_dropped_pass2)} 個重複圖塊)"
+                        print(msg)
+                        with open(os.path.join(pass2_dir, "healing_log.txt"), "a", encoding="utf-8") as _f_heal:
+                            _f_heal.write(msg + "\n\n")
+                        cv_bboxes = keep
                 
                 # 儲存精準二切結果 (方便除錯觀看)
                 for i, bbox in enumerate(cv_bboxes):
