@@ -117,6 +117,8 @@ async def extract_tables_node(state: GraphState):
     def progress_callback(msg: str):
         if tid:
             update_task_progress(tid, 60, msg)
+        else:
+            print(f"  {msg}")
 
     print("[Agent] 正在組裝多模態輸入，呼叫 Gemini Vision 解構 JSON...")
     extractor = TableExtractor()

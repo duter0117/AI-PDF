@@ -1738,7 +1738,7 @@ class TableExtractor:
                             
                             # === OCR-First: 規則引擎直接分配欄位 ===
                             from core.ocr_field_assigner import assign_fields, classify_text, FormatType
-                            rule_beam, low_conf_items = assign_fields(ctx.ocr_items, ctx)
+                            rule_beam, low_conf_items = assign_fields(ctx.ocr_items, ctx, index)
                             
                             # === Fallback: 如果 beam_id 為空，回去未裁切的 OCR 掃描結果找 ===
                             if not rule_beam.get("beam_id") and ocr_items:
@@ -2156,6 +2156,8 @@ class TableExtractor:
                                 # 如果 OCR 當初預測該項目屬於某個欄位 (只是因為信心不到95%被送到 LLM)
                                 # 結果 LLM 卻選擇不回答 (或忘記回答)，為了避免遺失資料，我們決定採用 OCR 的原始預測。
                                 if needs_llm:
+                                    print(f"  {'-'*40}")
+                                    print(f"  [OCR Fallback] 尋找未受 LLM 青睞的遺漏值...")
                                     # 排序：優先處理沒有 fallback_suffix (即確實吻合格式、只是信心略低) 的項目
                                     sorted_fallback = sorted(low_conf_items, key=lambda x: 1 if "fallback_suffix" in x else 0)
                                     for item in sorted_fallback:
