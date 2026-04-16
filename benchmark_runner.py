@@ -599,10 +599,15 @@ def generate_html_report(reports: list, voting_rounds: int = 1) -> str:
             def _fv(key):
                 v = data.get(key, "")
                 if isinstance(v, list):
+                    # 區分「LLM 主動否決」vs「LLM 忘記回答」
+                    if v and v[0] in ("LLM沒有東西", "LLM看不出來"):
+                        return "沒有東西"
                     clean = [x for x in v if x not in ("LLM沒有東西", "LLM看不出來")]
                     return ", ".join(clean) if clean else "(空)"
                 s = str(v).strip() if v else ""
-                return s if s and s not in ("LLM沒有東西", "LLM看不出來") else "(空)"
+                if s in ("LLM沒有東西", "LLM看不出來"):
+                    return "沒有東西"
+                return s if s else "(空)"
 
             def _cell(label_txt, key, extra_style=""):
                 val = html_mod.escape(_fv(key))
@@ -1030,8 +1035,12 @@ h3{{font-size:1rem;font-weight:600;color:#94a3b8;margin:20px 0 12px}}
         <div class="value">{avg_f1}%</div>
     </div>
     <div class="summary-card" style="background: linear-gradient(135deg, #1e3a8a, #111827);">
-        <div class="label" style="color: #60a5fa;">LLM Token 消耗 (輸入+輸出)</div>
+        <div class="label" style="color: #60a5fa;">LLM Token 消耗</div>
         <div class="value" style="font-size: 1.2rem;">{total_prompt_tokens + total_candidates_tokens:,} <span style="font-size: 0.7rem; color: #94a3b8;">({total_llm_calls} API Calls)</span></div>
+        <div style="display: flex; justify-content: center; gap: 16px; margin-top: 6px; font-size: 0.7rem;">
+            <span style="color: #93c5fd;">⬆ 輸入 {total_prompt_tokens:,}</span>
+            <span style="color: #86efac;">⬇ 輸出 {total_candidates_tokens:,}</span>
+        </div>
     </div>
 </div>
 

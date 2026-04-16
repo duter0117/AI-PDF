@@ -596,54 +596,46 @@ class TableExtractor:
         # 先以 Y 排序，再以 X 排序 (確保由上而下、由左而右)
         h_segments.sort(key=lambda s: (s[0], s[3]))
         
-        # 分組：Y 座標相差趨近 且 X 軸斷層不大於 30px (被標註線穿過) 的視為同一條線並反覆接合
-        # 💡 新增：若斷口被 OCR 文字方塊覆蓋，則跳回原圖 (binary_raw) 探測文字方塊左右緣是否有線像素
-        def _ocr_bridge_check(gap_x_start, gap_x_end, line_y, ocr_items, binary_raw_img):
-            """檢查斷口是否被 OCR box 覆蓋，且原圖在 box 左緣和右緣都有水平線像素。
-            gap_x_start: 斷口左端 X
-            gap_x_end:   斷口右端 X
-            line_y:      水平線的 Y 座標
-            回傳 True 表示確認可以橋接。
+        # 分組：Y 座標相差趨近的視為同一條線候選，X 軸斷口透過原圖像素追蹤來決定是否接合
+        # 💡 核心機制：從塗白圖 (binary) 的線段端點出發，切換至原圖 (binary_raw) 逐像素追蹤，
+        #    確認斷口內確實存在一條連續的水平線，才允許接合。
+        def _trace_bridge_in_raw(start_x, target_x, line_y, binary_raw_img, probe_half=4, max_gap=3):
+            """從 start_x 往右逐像素追蹤 binary_raw，看能否連續走到 target_x。
+            允許最多 max_gap 像素的微小斷口 (抗鋸齒/噪點容差)。
+            回傳 True 表示追蹤成功到達 target_x。
             """
             H, W = binary_raw_img.shape
-            probe_half = 4  # Y 方向探測半徑
-            probe_w = 5     # X 方向探測寬度 (在邊緣往內探 5px)
+            y_lo = max(0, line_y - probe_half)
+            y_hi = min(H, line_y + probe_half + 1)
             
-            for item in ocr_items:
-                box_x1 = int(item["min_x"])
-                box_x2 = int(item["max_x"])
-                box_y1 = int(item["min_y"])
-                box_y2 = int(item["max_y"])
-                
-                # 條件1: OCR box 的 X 範圍必須覆蓋整個斷口
-                if box_x1 > gap_x_start + 5 or box_x2 < gap_x_end - 5:
-                    continue
-                # 條件2: OCR box 的 Y 範圍必須包含這條線的 Y 座標 (±容差)
-                if not (box_y1 - 10 <= line_y <= box_y2 + 10):
-                    continue
-                
-                # 跳回原圖探測：文字方塊左緣 (往左探 probe_w px)
-                y_lo = max(0, line_y - probe_half)
-                y_hi = min(H, line_y + probe_half + 1)
-                
-                left_probe_x1 = max(0, box_x1 - probe_w)
-                left_probe_x2 = min(W, box_x1 + probe_w)
-                left_region = binary_raw_img[y_lo:y_hi, left_probe_x1:left_probe_x2]
-                left_has_line = np.any(left_region) if left_region.size > 0 else False
-                
-                # 跳回原圖探測：文字方塊右緣 (往右探 probe_w px)
-                right_probe_x1 = max(0, box_x2 - probe_w)
-                right_probe_x2 = min(W, box_x2 + probe_w)
-                right_region = binary_raw_img[y_lo:y_hi, right_probe_x1:right_probe_x2]
-                right_has_line = np.any(right_region) if right_region.size > 0 else False
-                
-                if left_has_line and right_has_line:
-                    print(f"  [OCR-Bridge] 文字方塊 '{item['text']}' 覆蓋斷口 X=[{gap_x_start:.0f},{gap_x_end:.0f}], 左右緣皆確認有線 → 允許接合")
-                    return True
-                elif left_has_line or right_has_line:
-                    side = "左" if left_has_line else "右"
-                    print(f"  [OCR-Bridge] 文字方塊 '{item['text']}' 覆蓋斷口，但只有{side}緣有線 → 不接合")
-            return False
+            sx = int(start_x)
+            tx = int(target_x)
+            if sx < 0 or sx >= W:
+                return False
+            
+            # 起點確認：起點附近必須有線像素
+            start_region = binary_raw_img[y_lo:y_hi, max(0, sx - 2):min(W, sx + 3)]
+            if not np.any(start_region):
+                return False
+            
+            x = sx
+            consecutive_empty = 0
+            
+            while x < min(tx + 5, W - 1):
+                col_slice = binary_raw_img[y_lo:y_hi, x + 1]
+                if np.any(col_slice):
+                    x += 1
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                    if consecutive_empty > max_gap:
+                        return False
+                    x += 1
+            
+            reached = (x >= tx - 5)
+            if reached:
+                print(f"  [Trace-Bridge] 原圖追蹤成功: X={start_x:.0f}→{target_x:.0f}, Y={line_y}")
+            return reached
         
         y_groups = [(seg_y, seg_w, seg_h, 1, seg_x) for seg_y, seg_w, seg_h, seg_x in h_segments]
         
@@ -656,18 +648,26 @@ class TableExtractor:
                 merged = False
                 for gi, (gy, gw, gh, gc, gx) in enumerate(new_groups):
                     if abs(seg_y - gy) <= 4:
+                        # 檢查粗細是否相近 (加入線寬檢查機制)
+                        t1 = seg_h / seg_c
+                        t2 = gh / gc
+                        if abs(t1 - t2) > max(1.5, min(t1, t2) * 0.25):
+                            continue
+                            
                         # 檢查 X 軸是否足夠靠近
                         gap = max(0, max(gx, seg_x) - min(gx + gw, seg_x + seg_w))
                         allow_merge = False
                         if gap < 30:
                             allow_merge = True
-                        elif gap < max_ocr_box_width + 30:  # 動態上限：最大文字方塊寬度 + 30px 容差
-                            # 💡 斷口被 OCR 文字方塊蓋住？跳回原圖確認左右兩端都有線
-                            gap_x_start = min(gx + gw, seg_x + seg_w)  # 斷口左端
-                            gap_x_end = max(gx, seg_x)                  # 斷口右端
-                            if gap_x_start > gap_x_end:
-                                gap_x_start, gap_x_end = gap_x_end, gap_x_start
-                            allow_merge = _ocr_bridge_check(gap_x_start, gap_x_end, gy, ocr_items, binary_raw)
+                        elif gap < 500:  # 合理上限：超過 500px 斷口不可能是同一條線
+                            # 💡 從左段右端出發，在 binary_raw 中逐像素追蹤到右段左端
+                            if gx < seg_x:
+                                trace_start = gx + gw
+                                trace_target = seg_x
+                            else:
+                                trace_start = seg_x + seg_w
+                                trace_target = gx
+                            allow_merge = _trace_bridge_in_raw(trace_start, trace_target, gy, binary_raw)
                         
                         if allow_merge:
                             new_x = min(gx, seg_x)
@@ -680,6 +680,40 @@ class TableExtractor:
                 if not merged:
                     new_groups.append(y_item)
             y_groups = new_groups
+        
+        # 💡 用 binary_raw（塗白前原圖）修復被 OCR 文字方塊截斷的水平線寬度
+        #    從每條線的左端往左、右端往右，在原圖逐像素探測真實延伸範圍
+        H_raw, W_raw = binary_raw.shape
+        recovered_y_groups = []
+        for (gy, gw, gh, gc, gx) in y_groups:
+            line_th = max(1, gh // gc)
+            probe_half = max(1, line_th // 2 + 1)
+            y_lo = max(0, gy - probe_half)
+            y_hi = min(H_raw, gy + probe_half + 1)
+            
+            # 往左延伸（不允許斷口）
+            new_left = gx
+            while new_left > 0:
+                col = binary_raw[y_lo:y_hi, new_left - 1]
+                if np.any(col):
+                    new_left -= 1
+                else:
+                    break
+            
+            # 往右延伸（不允許斷口）
+            new_right = gx + gw
+            while new_right < W_raw - 1:
+                col = binary_raw[y_lo:y_hi, new_right]
+                if np.any(col):
+                    new_right += 1
+                else:
+                    break
+            
+            new_w = new_right - new_left
+            if new_w > gw:
+                print(f"  [H-Recovery] 水平線 Y={gy} 寬度修復: {gw} → {new_w} (左延{gx - new_left}, 右延{new_right - gx - gw})")
+            recovered_y_groups.append((gy, new_w, gh, gc, new_left))
+        y_groups = recovered_y_groups
         
         # 尋找梁編號的最大合法 Y 座標 (梁下緣線不能在梁編號的下面)
         max_valid_bottom_y = float('inf')
@@ -777,13 +811,16 @@ class TableExtractor:
                     pair_center_y = (y1 + y2) / 2
                     norm_dist_center = abs((img_h / 2) - pair_center_y) / (img_h / 2)
                     
-                    # 6. 梁名距離加分 (X 軸距離越近分數越高)
+                    # 6. 梁名距離加分 (上緣/下緣各自獨立計算，各 +5.0 max)
                     bonus_beam_id = 0
                     if beam_id_xs:
-                        pair_center_x = (x1 + w1/2 + x2 + w2/2) / 2
-                        min_dist_to_id = min(abs(pair_center_x - id_x) for id_x in beam_id_xs)
-                        norm_dist_id = min_dist_to_id / img_w
-                        bonus_beam_id = max(0, 5.0 * (1 - (norm_dist_id / 0.2)))
+                        cx_top = x1 + w1 / 2
+                        cx_bot = x2 + w2 / 2
+                        dist_top = min(abs(cx_top - id_x) for id_x in beam_id_xs)
+                        dist_bot = min(abs(cx_bot - id_x) for id_x in beam_id_xs)
+                        bonus_beam_id_top = max(0, 5.0 * (1 - (dist_top / img_w / 0.5)))
+                        bonus_beam_id_bot = max(0, 5.0 * (1 - (dist_bot / img_w / 0.5)))
+                        bonus_beam_id = bonus_beam_id_top + bonus_beam_id_bot
                         
                     # 7. 移除危險的實體包夾加分 (因梁名有時會在下方當作圖例標題)
                     
@@ -815,12 +852,53 @@ class TableExtractor:
                     bonus_outer_top = 2.0 if is_topmost[i] else 0.0
                     bonus_outer_bot = 2.0 if is_botmost[j] else 0.0
                     
+                    # 12. X 中心偏移懲罰：只有「左邊在左 30% + 右邊在右 30%」的斜對角 pair 才扣
+                    cx1 = x1 + w1 / 2
+                    cx2 = x2 + w2 / 2
+                    left_cx = min(cx1, cx2)
+                    right_cx = max(cx1, cx2)
+                    if left_cx < img_w * 0.3 and right_cx > img_w * 0.7:
+                        penalty_x_offset = (abs(cx1 - cx2) / img_w) * 5.0
+                    else:
+                        penalty_x_offset = 0.0
+                    
+                    # 13. 梁名 X 覆蓋率加分：上下邊緣在梁名 X 範圍內的聯集覆蓋比例
+                    bonus_name_coverage = 0.0
+                    if beam_id_texts:
+                        name_min_x = min(item["min_x"] for item in beam_id_texts)
+                        name_max_x = max(item["max_x"] for item in beam_id_texts)
+                        name_span = name_max_x - name_min_x
+                        if name_span > 0:
+                            # 上邊緣 clip 到梁名範圍
+                            clip_top_l = max(x1, name_min_x)
+                            clip_top_r = min(x1 + w1, name_max_x)
+                            # 下邊緣 clip 到梁名範圍
+                            clip_bot_l = max(x2, name_min_x)
+                            clip_bot_r = min(x2 + w2, name_max_x)
+                            # 兩段的聯集長度
+                            segments = []
+                            if clip_top_r > clip_top_l:
+                                segments.append((clip_top_l, clip_top_r))
+                            if clip_bot_r > clip_bot_l:
+                                segments.append((clip_bot_l, clip_bot_r))
+                            # 合併重疊區間算聯集
+                            segments.sort()
+                            merged_segs = []
+                            for s in segments:
+                                if merged_segs and s[0] <= merged_segs[-1][1]:
+                                    merged_segs[-1] = (merged_segs[-1][0], max(merged_segs[-1][1], s[1]))
+                                else:
+                                    merged_segs.append(s)
+                            union_len = sum(s[1] - s[0] for s in merged_segs)
+                            bonus_name_coverage = min(1.0, union_len / name_span) * 5.0
+                    
                     # --- 最終權重組合 ---
-                    # 分配：長度+4, X軸重疊+4.0, 歷史線寬+1.0, 梁深排位差, 梁名靠近+5, 局部最外緣+2
-                    # 扣分：長短腳-2.0, 粗細不均-1.0, 偏心-1.0, 截斷-10.0, 越界-100.0
-                    score = (norm_min_w * 4.0) + (norm_overlap * 4.0) + bonus_col_stroke + bonus_depth + bonus_beam_id \
-                            + bonus_outer_top + bonus_outer_bot \
-                            - (norm_w_diff * 2.0) - (norm_th_diff * 1.0) - (norm_dist_center * 1.0) - edge_penalty - penalty_below_id
+                    # 分配：長度+4, X軸重疊+2.0, 歷史線寬+1.0, 梁深排位差, 梁名靠近+10, 局部最外緣+2, 梁名覆蓋+5
+                    # 扣分：長短腳-2.0, 粗細不均-1.0, 偏心-1.0, 截斷-10.0, 越界-100.0, X中心偏移-5.0
+                    score = (norm_min_w * 4.0) + (norm_overlap * 2.0) + bonus_col_stroke + bonus_depth + bonus_beam_id \
+                            + bonus_outer_top + bonus_outer_bot + bonus_name_coverage \
+                            - (norm_w_diff * 2.0) - (norm_th_diff * 1.0) - (norm_dist_center * 1.0) - edge_penalty - penalty_below_id \
+                            - penalty_x_offset
                     if score > best_score:
                         best_score = score
                         best_pair = (i, j)
@@ -862,9 +940,132 @@ class TableExtractor:
             beam_stroke = ctx.beam_stroke
             
             # 2. 垂直線
-            vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
+            vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 10))
             vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vert_kernel)
             v_contours, _ = cv2.findContours(vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # --- 垂直線 OCR 斷口接合邏輯 (基於原圖像素追蹤) ---
+            def _v_trace_bridge_in_raw(start_y, target_y, line_x, binary_raw_img, probe_half=4, max_gap=3):
+                """從 start_y 往下逐像素追蹤 binary_raw，看能否連續走到 target_y。
+                允許最多 max_gap 像素的微小斷口 (抗鋸齒/噪點容差)。
+                回傳 True 表示追蹤成功到達 target_y。
+                """
+                H, W = binary_raw_img.shape
+                x_lo = max(0, line_x - probe_half)
+                x_hi = min(W, line_x + probe_half + 1)
+                
+                sy = int(start_y)
+                ty = int(target_y)
+                if sy < 0 or sy >= H:
+                    return False
+                
+                # 起點確認：起點附近必須有線像素
+                start_region = binary_raw_img[max(0, sy - 2):min(H, sy + 3), x_lo:x_hi]
+                if not np.any(start_region):
+                    return False
+                
+                y = sy
+                consecutive_empty = 0
+                
+                while y < min(ty + 5, H - 1):
+                    row_slice = binary_raw_img[y + 1, x_lo:x_hi]
+                    if np.any(row_slice):
+                        y += 1
+                        consecutive_empty = 0
+                    else:
+                        consecutive_empty += 1
+                        if consecutive_empty > max_gap:
+                            return False
+                        y += 1
+                
+                reached = (y >= ty - 5)
+                if reached:
+                    print(f"  [V-Trace-Bridge] 原圖追蹤成功: Y={start_y:.0f}→{target_y:.0f}, X={line_x}")
+                return reached
+
+            v_segments = []
+            for cnt in v_contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                v_segments.append((x, y, w, h))
+            v_segments.sort(key=lambda s: (s[0], s[1]))
+            
+            x_groups = [(seg_x, seg_y, seg_w, seg_h) for seg_x, seg_y, seg_w, seg_h in v_segments]
+            
+            # --- 註解原因：真實柱位線容易和搭接長度標示線續接，導致誤判 ---
+            """
+            changed = True
+            while changed:
+                changed = False
+                new_groups = []
+                for x_item in x_groups:
+                    seg_x, seg_y, seg_w, seg_h = x_item
+                    merged = False
+                    for gi, (gx, gy, gw, gh) in enumerate(new_groups):
+                        if abs(seg_x - gx) <= 4:
+                            # 檢查粗細是否相近 (加入線寬檢查機制)
+                            if abs(seg_w - gw) > max(1.5, min(seg_w, gw) * 0.25):
+                                continue
+                                
+                            gap = max(0, max(gy, seg_y) - min(gy + gh, seg_y + seg_h))
+                            allow_merge = False
+                            if gap < 30:
+                                allow_merge = True
+                            elif gap < 300:  # 合理上限：超過 300px 斷口不可能是同一條線
+                                # 從上段下端出發，在 binary_raw 中逐像素追蹤到下段上端
+                                if gy < seg_y:
+                                    trace_start = gy + gh
+                                    trace_target = seg_y
+                                else:
+                                    trace_start = seg_y + seg_h
+                                    trace_target = gy
+                                allow_merge = _v_trace_bridge_in_raw(trace_start, trace_target, gx, binary_raw)
+                            
+                            if allow_merge:
+                                new_y = min(gy, seg_y)
+                                new_end = max(gy + gh, seg_y + seg_h)
+                                new_h = new_end - new_y
+                                new_groups[gi] = (gx, new_y, max(gw, seg_w), new_h)
+                                merged = True
+                                changed = True
+                                break
+                    if not merged:
+                        new_groups.append(x_item)
+                x_groups = new_groups
+            """
+            # ----------------------------------------
+            
+            # 💡 用 binary_raw（塗白前原圖）修復被 OCR 文字方塊截斷的垂直線高度
+            #    從每根線的上端往上、下端往下，在原圖逐像素探測真實延伸範圍
+            H_raw, W_raw = binary_raw.shape
+            recovered_groups = []
+            for (seg_x, seg_y, seg_w, seg_h) in x_groups:
+                probe_half = max(1, seg_w // 2 + 1)
+                x_lo = max(0, seg_x - probe_half)
+                x_hi = min(W_raw, seg_x + seg_w + probe_half)
+                
+                # 往上延伸（不允許斷口）
+                new_top = seg_y
+                while new_top > 0:
+                    row = binary_raw[new_top - 1, x_lo:x_hi]
+                    if np.any(row):
+                        new_top -= 1
+                    else:
+                        break
+                
+                # 往下延伸（不允許斷口）
+                new_bot = seg_y + seg_h
+                while new_bot < H_raw - 1:
+                    row = binary_raw[new_bot, x_lo:x_hi]
+                    if np.any(row):
+                        new_bot += 1
+                    else:
+                        break
+                
+                new_h = new_bot - new_top
+                if new_h > seg_h:
+                    print(f"  [V-Recovery] 垂直線 X={seg_x} 高度修復: {seg_h} → {new_h} (上移{seg_y - new_top}, 下延{new_bot - seg_y - seg_h})")
+                recovered_groups.append((seg_x, new_top, seg_w, new_h))
+            x_groups = recovered_groups
             
             # 先提取出確認的上下邊緣實體，用來抓 X 軸的端點位置
             h_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
@@ -872,8 +1073,7 @@ class TableExtractor:
             bot_edge = next((l for l in h_edges if abs(l.y - beam_bottom) <= 3), None)
             
             detected_x_cols = []
-            for cnt in v_contours:
-                x, y, w, h = cv2.boundingRect(cnt)
+            for (x, y, w, h) in x_groups:
                 tolerance_w = max(1.5, beam_stroke * 0.25)
                 if abs(w - beam_stroke) > tolerance_w:
                     ctx.lines.append(DetectedLine(
@@ -886,29 +1086,67 @@ class TableExtractor:
                     ))
                     continue
                     
-                touches_top = abs((y + h) - beam_top) <= 3 and y < beam_top - 20
-                touches_bot = abs(y - beam_bottom) <= 3 and (y + h) > beam_bottom + 20
-                crosses_top = (y < beam_top - 10) and ((y + h) > beam_top + 15)
-                crosses_bot = ((y + h) > beam_bottom + 10) and (y < beam_bottom - 15)
+                # 收集每項幾何條件的原始結果（未套用端點檢查前）
+                # touches_top: 線從上方，底端碰觸 beam_top
+                raw_touches_top = abs((y + h) - beam_top) <= 10 and y < beam_top - 10
+                # touches_bot: 線從下方，頂端碰觸 beam_bottom
+                raw_touches_bot = abs(y - beam_bottom) <= 10 and (y + h) > beam_bottom + 10
+                # crosses_top: 線穿越 beam_top
+                raw_crosses_top = (y < beam_top - 10) and ((y + h) > beam_top + 10)
+                # crosses_bot: 線穿越 beam_bottom
+                raw_crosses_bot = ((y + h) > beam_bottom + 10) and (y < beam_bottom - 10)
+                # arrives_bot: 線從上方延伸，底端抵達 beam_bottom（但未穿越 10px 以上）
+                raw_arrives_bot = abs((y + h) - beam_bottom) <= 10 and y < beam_bottom - 10
+                # arrives_top: 線從下方延伸，頂端抵達 beam_top（但未穿越 10px 以上）
+                raw_arrives_top = abs(y - beam_top) <= 10 and (y + h) > beam_top + 10
 
                 # 端點檢查邏輯：只有靠近水平邊線端點的垂直線才算有效的柱線
                 near_top_endpoint = False
                 if top_edge:
-                    near_top_endpoint = abs(x - top_edge.x) <= 40 or abs(x - (top_edge.x + top_edge.w)) <= 40
+                    near_top_endpoint = abs(x - top_edge.x) <= 5 or abs(x - (top_edge.x + top_edge.w)) <= 5
                 
                 near_bot_endpoint = False
                 if bot_edge:
-                    near_bot_endpoint = abs(x - bot_edge.x) <= 40 or abs(x - (bot_edge.x + bot_edge.w)) <= 40
+                    near_bot_endpoint = abs(x - bot_edge.x) <= 5 or abs(x - (bot_edge.x + bot_edge.w)) <= 5
 
                 # 必須同時滿足 Y 軸的幾何接觸與 X 軸的端點鄰近
-                touches_top = touches_top and near_top_endpoint
-                crosses_top = crosses_top and near_top_endpoint
-                touches_bot = touches_bot and near_bot_endpoint
-                crosses_bot = crosses_bot and near_bot_endpoint
+                touches_top = raw_touches_top and near_top_endpoint
+                crosses_top = raw_crosses_top and near_top_endpoint
+                touches_bot = raw_touches_bot and near_bot_endpoint
+                crosses_bot = raw_crosses_bot and near_bot_endpoint
+                arrives_bot = raw_arrives_bot and near_bot_endpoint
+                arrives_top = raw_arrives_top and near_top_endpoint
                 
-                passed = touches_top or touches_bot or crosses_top or crosses_bot
+                passed = touches_top or touches_bot or crosses_top or crosses_bot or arrives_bot or arrives_top
                 
-                reject_reason = "幾何不符或遠離端點" if not passed else ""
+                # 詳細拒絕原因
+                reject_reason = ""
+                if not passed:
+                    reasons = []
+                    # Y 軸幾何接觸檢查
+                    y_any = (raw_touches_top or raw_touches_bot or raw_crosses_top or raw_crosses_bot
+                             or raw_arrives_bot or raw_arrives_top)
+                    if not y_any:
+                        dist_top = abs((y + h) - beam_top)
+                        dist_bot = abs(y - beam_bottom)
+                        reasons.append(f"Y不觸梁(上距{dist_top:.0f} 下距{dist_bot:.0f})")
+                    else:
+                        # Y 通過但端點不通過
+                        if (raw_touches_top or raw_crosses_top or raw_arrives_top) and not near_top_endpoint:
+                            if top_edge:
+                                d_left = abs(x - top_edge.x)
+                                d_right = abs(x - (top_edge.x + top_edge.w))
+                                reasons.append(f"遠離上邊端點(左{d_left:.0f} 右{d_right:.0f})")
+                            else:
+                                reasons.append("無上邊緣線")
+                        if (raw_touches_bot or raw_crosses_bot or raw_arrives_bot) and not near_bot_endpoint:
+                            if bot_edge:
+                                d_left = abs(x - bot_edge.x)
+                                d_right = abs(x - (bot_edge.x + bot_edge.w))
+                                reasons.append(f"遠離下邊端點(左{d_left:.0f} 右{d_right:.0f})")
+                            else:
+                                reasons.append("無下邊緣線")
+                    reject_reason = " | ".join(reasons) if reasons else "幾何不符"
                 lx, rx = x, x
                 is_leader = False
                 free_y = 0
@@ -948,11 +1186,12 @@ class TableExtractor:
                                 x1, x2 = item["min_x"], item["max_x"]
                                 y1, y2 = item["min_y"], item["max_y"]
                                 
-                                near_tip = (x1 - 60 <= x <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
+                                # 註解掉 near_tip 的檢查：標註線必定伴隨水平引線（dog-leg），不該單以垂直線端點判定
+                                # near_tip = (x1 - 60 <= x <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
                                 near_left = (x1 - 60 <= lx <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
                                 near_right = (x1 - 60 <= rx <= x2 + 60) and (y1 - 60 <= free_y <= y2 + 60)
                                 
-                                if near_tip or near_left or near_right:
+                                if near_left or near_right:
                                     is_leader = True
                                     break
                         if is_leader:
@@ -961,6 +1200,16 @@ class TableExtractor:
                 
                 # 建立 DetectedLine 物件
                 if passed:
+                    # 記錄此柱線對應的梁邊緣類型
+                    assoc_top = touches_top or crosses_top
+                    assoc_bot = touches_bot or crosses_bot
+                    if assoc_top and assoc_bot:
+                        edge_assoc = "both"
+                    elif assoc_top:
+                        edge_assoc = "top"
+                    else:
+                        edge_assoc = "bot"
+                    
                     ctx.lines.append(DetectedLine(
                         kind="v_column", status=ObjectStatus.CONFIRMED,
                         x=x, y=y, w=w, h=h, lx=lx, rx=rx, free_y=free_y,
@@ -968,7 +1217,7 @@ class TableExtractor:
                         abs_w=ctx.to_pdf_w(w), abs_h=ctx.to_pdf_w(h),
                         abs_lx=ctx.to_pdf_x(lx), abs_rx=ctx.to_pdf_x(rx), abs_free_y=ctx.to_pdf_y(free_y)
                     ))
-                    detected_x_cols.append(x)
+                    detected_x_cols.append((x, edge_assoc))
                 elif is_leader:
                     ctx.lines.append(DetectedLine(
                         kind="v_leader", status=ObjectStatus.REJECTED,
@@ -988,61 +1237,120 @@ class TableExtractor:
                         abs_lx=ctx.to_pdf_x(lx), abs_rx=ctx.to_pdf_x(rx), abs_free_y=ctx.to_pdf_y(free_y)
                     ))
             
-            # 去重 + 排序 (相距 < 10px 的視為同一根柱)
-            detected_x_cols.sort()
+            # 去重 + 排序 (相距 < 10px 的視為同一根柱，保留 edge 資訊)
+            detected_x_cols.sort(key=lambda t: t[0])
             deduped = []
-            for cx in detected_x_cols:
-                if not deduped or abs(cx - deduped[-1]) > 10:
-                    deduped.append(cx)
-            ctx.all_cols_sorted = deduped
+            for cx, ea in detected_x_cols:
+                if not deduped or abs(cx - deduped[-1][0]) > 10:
+                    deduped.append((cx, ea))
+                else:
+                    # 合併 edge 資訊 (如果同位置有 top 和 bot，升級為 both)
+                    prev_x, prev_ea = deduped[-1]
+                    if prev_ea != ea and prev_ea != "both":
+                        deduped[-1] = (prev_x, "both")
+            ctx.all_cols_sorted = [cx for cx, _ in deduped]
                     
-            if ctx.all_cols_sorted:
+            # 缺柱線分邊降級 (Fallback): 上/下邊緣各自獨立，缺哪邊就用該邊梁邊緣線的端點補保底
+            h_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
+            top_edge_line = next((l for l in h_edges if abs(l.y - beam_top) <= 3), None) if ctx.beam_top is not None else None
+            bot_edge_line = next((l for l in h_edges if abs(l.y - beam_bottom) <= 3), None) if ctx.beam_bottom is not None else None
+            
+            if deduped:
                 if beam_id_texts:
                     center_x = sum(item["cx"] for item in beam_id_texts) / len(beam_id_texts)
                 else:
                     center_x = img_enhanced.width / 2
-                left_cols = [cx for cx in ctx.all_cols_sorted if cx < center_x]
-                right_cols = [cx for cx in ctx.all_cols_sorted if cx >= center_x]
-                if left_cols:
-                    if top_edge:
-                        # 梁上緣線從左柱畫到右柱，其左端點即為左柱位。
-                        # 不從候選池挑選，因為候選池可能含有牛腿 (haunch) 或截面標記等雜線。
-                        ctx.left_col = top_edge.x
+                
+                # 分上下邊緣、分左右，各自挑最靠近中心的柱位線
+                left_top  = [cx for cx, ea in deduped if cx < center_x and ea in ("top", "both")]
+                left_bot  = [cx for cx, ea in deduped if cx < center_x and ea in ("bot", "both")]
+                right_top = [cx for cx, ea in deduped if cx >= center_x and ea in ("top", "both")]
+                right_bot = [cx for cx, ea in deduped if cx >= center_x and ea in ("bot", "both")]
+                
+                # 保底注入：缺哪組就用對應梁邊緣線的端點補上
+                # 限制：保底線不能貼在圖片最左邊或最右邊 (±3px 內視為邊框，取消不畫)
+                img_w_px = img_enhanced.width
+                
+                if not left_top and top_edge_line:
+                    fb_x = top_edge_line.x
+                    if fb_x > 3:
+                        left_top.append(fb_x)
+                        ctx.lines.append(DetectedLine(
+                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="上邊緣左端降級",
+                            x=fb_x, y=top_edge_line.y, w=3, h=top_edge_line.h
+                        ))
+                        print(f"  [保底] 左上柱線缺失，用梁上緣左端 X={fb_x:.0f} 補")
                     else:
-                        ctx.left_col = max(left_cols)
+                        print(f"  [保底取消] 左上降級 X={fb_x:.0f} 貼在圖片左邊框，跳過")
+                if not left_bot and bot_edge_line:
+                    fb_x = bot_edge_line.x
+                    if fb_x > 3:
+                        left_bot.append(fb_x)
+                        ctx.lines.append(DetectedLine(
+                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="下邊緣左端降級",
+                            x=fb_x, y=bot_edge_line.y, w=3, h=bot_edge_line.h
+                        ))
+                        print(f"  [保底] 左下柱線缺失，用梁下緣左端 X={fb_x:.0f} 補")
+                    else:
+                        print(f"  [保底取消] 左下降級 X={fb_x:.0f} 貼在圖片左邊框，跳過")
+                if not right_top and top_edge_line:
+                    fb_x = top_edge_line.x + top_edge_line.w
+                    if fb_x < img_w_px - 3:
+                        right_top.append(fb_x)
+                        ctx.lines.append(DetectedLine(
+                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="上邊緣右端降級",
+                            x=fb_x, y=top_edge_line.y, w=3, h=top_edge_line.h
+                        ))
+                        print(f"  [保底] 右上柱線缺失，用梁上緣右端 X={fb_x:.0f} 補")
+                    else:
+                        print(f"  [保底取消] 右上降級 X={fb_x:.0f} 貼在圖片右邊框，跳過")
+                if not right_bot and bot_edge_line:
+                    fb_x = bot_edge_line.x + bot_edge_line.w
+                    if fb_x < img_w_px - 3:
+                        right_bot.append(fb_x)
+                        ctx.lines.append(DetectedLine(
+                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="下邊緣右端降級",
+                            x=fb_x, y=bot_edge_line.y, w=3, h=bot_edge_line.h
+                        ))
+                        print(f"  [保底] 右下柱線缺失，用梁下緣右端 X={fb_x:.0f} 補")
+                    else:
+                        print(f"  [保底取消] 右下降級 X={fb_x:.0f} 貼在圖片右邊框，跳過")
+                
+                # 左側紅線：從上邊緣候選和下邊緣候選各取最靠近中心的，再取較外側(較小值)
+                left_candidates = []
+                if left_top: left_candidates.append(max(left_top))
+                if left_bot: left_candidates.append(max(left_bot))
+                if left_candidates:
+                    ctx.left_col = min(left_candidates)
+                    print(f"  [柱位選擇] 左側: top候選={left_top}, bot候選={left_bot} → 取 {ctx.left_col}")
                         
-                if right_cols:
-                    if top_edge:
-                        # 梁上緣線從左柱畫到右柱，其右端點即為右柱位。
-                        ctx.right_col = top_edge.x + top_edge.w
-                    else:
-                        ctx.right_col = min(right_cols)
-                    
-            # 缺柱線完美降級 (Fallback): 若無法確認左或右柱緣，提取 h_beam_edge 兩端當作柱線
+                # 右側紅線：從上邊緣候選和下邊緣候選各取最靠近中心的，再取較外側(較大值)
+                right_candidates = []
+                if right_top: right_candidates.append(min(right_top))
+                if right_bot: right_candidates.append(min(right_bot))
+                if right_candidates:
+                    ctx.right_col = max(right_candidates)
+                    print(f"  [柱位選擇] 右側: top候選={right_top}, bot候選={right_bot} → 取 {ctx.right_col}")
+            
+            # 終極保底：若完全無 deduped 柱線也無梁邊緣，用梁邊緣線整體端點
             if ctx.left_col is None or ctx.right_col is None:
-                h_edges = [l for l in ctx.lines if l.kind == "h_beam_edge"]
                 if h_edges:
-                    min_h_x = min(l.x for l in h_edges)
-                    max_h_x = max((l.x + l.w) for l in h_edges)
-                    fallback_y = min(l.y for l in h_edges)
-                    fallback_bot_y = max((l.y + l.h) for l in h_edges)
-                    fallback_h = fallback_bot_y - fallback_y
-                    
                     if ctx.left_col is None:
-                        ctx.left_col = min_h_x
-                        ctx.all_cols_sorted.append(min_h_x)
-                        ctx.lines.append(DetectedLine(
-                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="水平邊緣降級",
-                            x=min_h_x, y=fallback_y, w=3, h=fallback_h
-                        ))
+                        fb_x = min(l.x for l in h_edges)
+                        ctx.left_col = fb_x
+                        ctx.all_cols_sorted.append(fb_x)
+                        print(f"  [終極保底] 左柱線用梁邊緣最左端 X={fb_x:.0f}")
                     if ctx.right_col is None:
-                        ctx.right_col = max_h_x
-                        ctx.all_cols_sorted.append(max_h_x)
-                        ctx.lines.append(DetectedLine(
-                            kind="v_column", status=ObjectStatus.CONFIRMED, reject_reason="水平邊緣降級",
-                            x=max_h_x, y=fallback_y, w=3, h=fallback_h
-                        ))
-                    ctx.all_cols_sorted.sort()
+                        fb_x = max((l.x + l.w) for l in h_edges)
+                        ctx.right_col = fb_x
+                        ctx.all_cols_sorted.append(fb_x)
+                        print(f"  [終極保底] 右柱線用梁邊緣最右端 X={fb_x:.0f}")
+            
+            # 更新 all_cols_sorted
+            all_new = set(ctx.all_cols_sorted)
+            if ctx.left_col is not None: all_new.add(ctx.left_col)
+            if ctx.right_col is not None: all_new.add(ctx.right_col)
+            ctx.all_cols_sorted = sorted(all_new)
 
     # ================================================================
     # Debug 七彩診斷繪圖 (從 CropContext 讀取所有偵測物件)
@@ -1052,7 +1360,17 @@ class TableExtractor:
         """在 ctx.img 上繪製完整的七彩診斷光譜，並存檔到 crops/debug_col/。
         同時回傳一份只畫紅線的 Gemini 用乾淨圖片。
         """
-        from PIL import ImageDraw
+        from PIL import ImageDraw, ImageFont
+        
+        # 載入中文字型 (Windows 微軟正黑體)
+        _zh_font = None
+        _zh_font_sm = None
+        try:
+            _zh_font = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 16)
+            _zh_font_sm = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 12)
+        except Exception:
+            _zh_font = ImageFont.load_default()
+            _zh_font_sm = _zh_font
         
         offset_margin = 20
         img_debug = ctx.img.copy()
@@ -1097,18 +1415,25 @@ class TableExtractor:
             if d.kind.startswith("h_"):
                 continue  # 水平線不畫垂直標記
             
-            if d.reject_reason == "幾何不符":
-                color = (128, 128, 128)  # 灰色
-            elif d.reject_reason == "線寬不符":
-                color = (128, 0, 128)    # 紫色
-            elif d.reject_reason == "引線判定":
-                color = (0, 165, 255)    # 橘色
-            elif d.kind == "v_column":
+            if d.kind == "v_column":
                 color = (0, 255, 0)      # 綠色
+            elif "線寬不符" in (d.reject_reason or ""):
+                color = (128, 0, 128)    # 紫色
+            elif "引線判定" in (d.reject_reason or ""):
+                color = (0, 165, 255)    # 橘色
+            elif d.reject_reason:
+                color = (128, 128, 128)  # 灰色：幾何/端點不符
             else:
                 color = (128, 128, 128)  # 灰色 fallback
             
             draw.line([(d.x, d.y), (d.x, d.y + d.h)], fill=color, width=4)
+            
+            # 標出不合格原因
+            if d.reject_reason:
+                reason_label = d.reject_reason
+                label_x = d.x + 6
+                label_y = d.y + d.h // 2 - 8
+                draw.text((label_x, label_y), reason_label, fill=color, font=_zh_font_sm)
             
             # 畫引線的水平狗腿延伸
             if d.lx < d.x or d.rx > d.x:
@@ -1124,11 +1449,11 @@ class TableExtractor:
             ("Reject: Leader", (0, 165, 255)),
             ("Leader Dog-leg", (255, 255, 0))
         ]
-        draw.rectangle([(0, 0), (160, 15 + len(legend) * 15)], fill=(0, 0, 0))
+        draw.rectangle([(0, 0), (200, 18 + len(legend) * 20)], fill=(0, 0, 0))
         for idx, (txt, color) in enumerate(legend):
-            y = 15 + idx * 15
+            y = 18 + idx * 20
             draw.line([(10, y - 4), (30, y - 4)], fill=color, width=3)
-            draw.text((35, y - 10), txt, fill=(255, 255, 255))
+            draw.text((35, y - 10), txt, fill=(255, 255, 255), font=_zh_font_sm)
         
         # 存檔
         os.makedirs("crops/debug_col", exist_ok=True)
@@ -1322,42 +1647,80 @@ class TableExtractor:
                             })
                     
                     # === Pass 1 Debug 繪圖：在小圖上畫出偵測到的結構線 ===
-                    from PIL import ImageDraw as _IDraw
+                    from PIL import ImageDraw as _IDraw, ImageFont as _IFont
                     img_p1_debug = img_enhanced.copy()
                     draw_p1 = _IDraw.Draw(img_p1_debug)
                     
-                    # 粉紅線：梁上下邊緣
-                    if ctx_scan.beam_top is not None:
-                        draw_p1.line([(0, ctx_scan.beam_top), (img_p1_debug.width, ctx_scan.beam_top)],
-                                     fill=(255, 105, 180), width=4)
-                    if ctx_scan.beam_bottom is not None:
-                        draw_p1.line([(0, ctx_scan.beam_bottom), (img_p1_debug.width, ctx_scan.beam_bottom)],
-                                     fill=(255, 105, 180), width=4)
+                    # 載入中文字型
+                    _p1_font = None
+                    _p1_font_sm = None
+                    try:
+                        _p1_font = _IFont.truetype("C:/Windows/Fonts/msyh.ttc", 16)
+                        _p1_font_sm = _IFont.truetype("C:/Windows/Fonts/msyh.ttc", 12)
+                    except Exception:
+                        _p1_font = _IFont.load_default()
+                        _p1_font_sm = _p1_font
+                    
+                    # 水平線：按實際起點/終點畫，並標出得分
+                    for d in ctx_scan.lines:
+                        if not d.kind.startswith("h_"):
+                            continue
+                        if d.kind == "h_beam_edge":
+                            h_color = (255, 105, 180)  # 粉紅：確認的梁邊緣
+                        elif d.kind == "h_dimension":
+                            h_color = (255, 200, 0)    # 橙黃：標註線
+                        else:
+                            h_color = (180, 180, 180)  # 淡灰：被拒絕的候選
+                        draw_p1.line([(d.x, d.y), (d.x + d.w, d.y)], fill=h_color, width=4)
+                        # 標出得分
+                        score_label = d.score_text or ""
+                        if d.reject_reason:
+                            score_label = f"{score_label} [{d.reject_reason}]"
+                        if score_label:
+                            draw_p1.text((d.x + 5, d.y - 18), score_label, fill=h_color, font=_p1_font_sm)
                     
                     # 垂直線：根據 kind / reject_reason 上色
                     for d in ctx_scan.lines:
                         if d.kind.startswith("h_"):
                             continue
-                        if d.reject_reason == "幾何不符":
-                            color = (128, 128, 128)
-                        elif d.reject_reason == "線寬不符":
-                            color = (128, 0, 128)
-                        elif d.reject_reason == "引線判定":
-                            color = (0, 165, 255)
-                        elif d.kind == "v_column":
+                        if d.kind == "v_column":
                             color = (0, 255, 0)
+                        elif "線寬不符" in (d.reject_reason or ""):
+                            color = (128, 0, 128)
+                        elif "引線判定" in (d.reject_reason or ""):
+                            color = (0, 165, 255)
+                        elif d.reject_reason:
+                            color = (128, 128, 128)
                         else:
                             color = (128, 128, 128)
                         draw_p1.line([(d.x, d.y), (d.x, d.y + d.h)], fill=color, width=4)
+                        
+                        # 綠色柱線標座標
+                        if d.kind == "v_column":
+                            label = f"({d.x},{d.y}) h={d.h}"
+                            label_w = len(label) * 8
+                            if d.x + 6 + label_w > img_p1_debug.width:
+                                draw_p1.text((d.x - 6 - label_w, d.y), label, fill=(0, 255, 0), font=_p1_font_sm)
+                            else:
+                                draw_p1.text((d.x + 6, d.y), label, fill=(0, 255, 0), font=_p1_font_sm)
+                        
+                        # 不合格線標出拒絕原因
+                        if d.reject_reason:
+                            reason_label = d.reject_reason
+                            lbl_x = d.x + 6
+                            lbl_y = d.y + d.h // 2 - 8
+                            draw_p1.text((lbl_x, lbl_y), reason_label, fill=color, font=_p1_font_sm)
                     
                     # 紅線：最終柱位裁切線
                     om = 20
                     if ctx_scan.left_col is not None:
                         fx = max(0, ctx_scan.left_col - om)
                         draw_p1.line([(fx, 0), (fx, img_p1_debug.height)], fill="red", width=6)
+                        draw_p1.text((fx + 8, 10), f"L={ctx_scan.left_col:.0f}", fill="red", font=_p1_font)
                     if ctx_scan.right_col is not None:
                         fx = min(img_p1_debug.width, ctx_scan.right_col + om)
                         draw_p1.line([(fx, 0), (fx, img_p1_debug.height)], fill="red", width=6)
+                        draw_p1.text((fx - 80, 10), f"R={ctx_scan.right_col:.0f}", fill="red", font=_p1_font)
                     
                     img_p1_debug.save(os.path.join(pass1_dir, f"crop_{i}_debug.png"))
                     
@@ -2115,7 +2478,8 @@ class TableExtractor:
                                             continue
                                         # 正規化比較
                                         _llm_str = _llm_v[0] if isinstance(_llm_v, list) and _llm_v else (_llm_v if isinstance(_llm_v, str) else None)
-                                        if _llm_str and _llm_str not in ("LLM沒有東西", "LLM看不出來") and str(_ocr_v).strip() != str(_llm_str).strip():
+                                        # 🔧 不再排除 "LLM沒有東西"：OCR 有資料但 LLM 說沒有 → 這是真衝突，需要仲裁
+                                        if _llm_str and str(_ocr_v).strip() != str(_llm_str).strip():
                                             conflicting.append((_ck, str(_ocr_v).strip(), str(_llm_str).strip()))
 
                                     MAX_RETRY_FIELDS = 12
