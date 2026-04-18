@@ -389,7 +389,7 @@ class VectorExtractor:
                 if search_rect.width > 10 and search_rect.height > 10:
                     try:
                         if not hasattr(self, '_title_ocr'):
-                            from rapidocr_onnxruntime import RapidOCR
+                            from rapidocr_openvino import RapidOCR
                             self._title_ocr = RapidOCR()
                         
                         search_pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), clip=search_rect)
@@ -452,6 +452,7 @@ class VectorExtractor:
                             all_potential_titles.append(pt)
                             global_title_id += 1
                     except Exception as e:
+                        print(f"RapidOCR 執行發生錯誤: {e}")
                         pass
 
             valid_ids_set = set()
