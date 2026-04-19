@@ -5,7 +5,13 @@ import fitz
 from PIL import Image, ImageDraw, ImageFont
 import glob
 from dotenv import load_dotenv
+import sys
+import warnings
 
+# 強制關閉輸出緩衝，讓 print 立刻顯示在終端機
+sys.stdout.reconfigure(line_buffering=True)
+# 隱藏 Google API 的 FutureWarning 以免誤導為報錯
+warnings.filterwarnings("ignore", category=FutureWarning)
 from core.vector_extractor import VectorExtractor
 
 load_dotenv()  # 載入 .env 裡面的 GEMINI_API_KEY

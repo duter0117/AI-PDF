@@ -434,7 +434,12 @@ class VectorExtractor:
                             for pt in potential_titles:
                                 horizontal_gap = max(0, max(rt["ocr_x_left"], pt["ocr_x_left"]) - min(rt["ocr_x_right"], pt["ocr_x_right"]))
                                 if horizontal_gap < 60 and abs(rt["cy"] - pt["cy"]) < 30:
-                                    pt["text"] += " " + rt["text"]
+                                    # 合併前檢查：如果合併後會出現 2 組以上尺寸標記，代表是獨立標題，不合併
+                                    combined_text = pt["text"] + " " + rt["text"]
+                                    dim_count = len(re.findall(r'\d+\s*[xX×*]\s*\d+', combined_text))
+                                    if dim_count >= 2:
+                                        break
+                                    pt["text"] = combined_text
                                     pt["cx"] = (pt["cx"] + rt["cx"]) / 2
                                     pt["cy"] = (pt["cy"] + rt["cy"]) / 2
                                     pt["bottom_y"] = max(pt["bottom_y"], rt["bottom_y"])
@@ -529,6 +534,17 @@ class VectorExtractor:
         
         for i, bbox in enumerate(results):
             orig_x0, orig_y0, orig_x1, orig_y1 = bbox
+            
+            # 先檢查母塊內部是否已經有標題存在，如果有就跳過 Reclaim
+            has_internal_title = False
+            for ct in confirmed_titles_list:
+                pdf_cx = ct["cx"] / 4.0
+                pdf_cy = ct["cy"] / 4.0
+                if orig_x0 - 10 <= pdf_cx <= orig_x1 + 10 and orig_y0 <= pdf_cy <= orig_y1:
+                    has_internal_title = True
+                    claimed_title_ids.add(ct["id"])
+            if has_internal_title:
+                continue
             
             owned_titles = []
             for ct in confirmed_titles_list:
@@ -636,7 +652,21 @@ class VectorExtractor:
                     else:
                         y_groups[-1].append(t)
 
+                # 檢查相鄰群的 X 範圍是否有重疊，沒重疊代表是左右排列而非上下疊放
+                has_x_overlap = False
                 if len(y_groups) >= 2:
+                    for gi in range(len(y_groups) - 1):
+                        g_a = y_groups[gi]
+                        g_b = y_groups[gi + 1]
+                        a_left  = min(t["ocr_x_left"]  for t in g_a)
+                        a_right = max(t["ocr_x_right"] for t in g_a)
+                        b_left  = min(t["ocr_x_left"]  for t in g_b)
+                        b_right = max(t["ocr_x_right"] for t in g_b)
+                        if a_left < b_right and b_left < a_right:
+                            has_x_overlap = True
+                            break
+
+                if len(y_groups) >= 2 and has_x_overlap:
                     phase37_split += 1
                     print(f"[Phase 3.7] 母塊 {p_idx} 垂直分割: {len(y_groups)} 排, 標題: {[t['text'] for t in filtered_titles]}")
                     
@@ -728,7 +758,21 @@ class VectorExtractor:
                     else:
                         y_groups[-1].append(t)
                         
+                # 檢查相鄰群的 X 範圍是否有重疊
+                has_x_overlap = False
                 if len(y_groups) >= 2:
+                    for gi in range(len(y_groups) - 1):
+                        g_a = y_groups[gi]
+                        g_b = y_groups[gi + 1]
+                        a_left  = min(t["ocr_x_left"]  for t in g_a)
+                        a_right = max(t["ocr_x_right"] for t in g_a)
+                        b_left  = min(t["ocr_x_left"]  for t in g_b)
+                        b_right = max(t["ocr_x_right"] for t in g_b)
+                        if a_left < b_right and b_left < a_right:
+                            has_x_overlap = True
+                            break
+
+                if len(y_groups) >= 2 and has_x_overlap:
                     final_split_count += 1
                     print(f"[Phase 3.7.2] 融合後二次水平斬波: 將融合大塊切成 {len(y_groups)} 排")
                     
