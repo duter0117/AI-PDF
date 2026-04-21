@@ -152,7 +152,7 @@ def process_single_pdf(pdf_path, out_dir, page_num=0):
             draw.rectangle([px0, py0, px1, py1], outline="red", width=2)
             
             # 加上編號文字
-            draw.text((px0, max(0, py0 - 25)), f"Parent {beam['parent_id']}", fill="red")
+            draw.text((px0 + 4, py0 + 4), f"Parent {beam['parent_id']}", fill="red")
             
             # 依據你的要求，不再繪製「綠色子標題」與「藍色單跨」框
                 

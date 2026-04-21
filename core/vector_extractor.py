@@ -146,22 +146,26 @@ class VectorExtractor:
     @staticmethod
     def _content_trim_bboxes(bboxes, thresh, page_w, page_h,
                              pad_x=60, pad_y=20, trim_bottom=False,
-                             thresh_bottom=None):
+                             thresh_bottom=None, title_bboxes=None):
         """
         Content-Aware Trim: 使用二值化圖 (thresh, 4x scale) 收緊 bbox 邊界。
         
         Args:
             bboxes: list of [x0, y0, x1, y1] in PDF units (mutated in-place)
-            thresh: 二值圖 (4x scale, 白=有墨水), 用於頂部/X軸 trim
+            thresh: 二值圖 (4x scale, 白=有墨水), 用於 X/Y 軸 trim
             page_w, page_h: 頁面尺寸 (PDF units), 用於 clamp
             pad_x: X 軸緩衝 (4x px), 預設 60 ≈ 15pt
             pad_y: Y 軸緩衝 (4x px), 預設 20 ≈ 5pt
             trim_bottom: 是否也收緊底部 (母塊階段 False, Pass2 階段 True)
             thresh_bottom: 底部 trim 專用二值圖 (含標題文字), 預設 None 表示用 thresh
+            title_bboxes: 梁名 OCR 框列表 [{ocr_x_left, ocr_x_right, bottom_y, h}, ...]
+                          X 軸 trim 不會裁進這些框的範圍 (保護梁名文字)
         """
         import numpy as np
         if thresh_bottom is None:
             thresh_bottom = thresh
+        if title_bboxes is None:
+            title_bboxes = []
         for bbox in bboxes:
             # (1) Page clamp
             bbox[0] = max(0.0, bbox[0])
@@ -181,16 +185,33 @@ class VectorExtractor:
             if roi.size == 0:
                 continue
             
-            # X 軸
+            # X 軸 (用去梁名 thresh，但保護梁名 OCR 框不被裁掉)
             col_sums = roi.sum(axis=0)
             nonzero_cols = np.where(col_sums > 0)[0]
             if len(nonzero_cols) > 0:
                 trim_left  = max(0,              nonzero_cols[0]  - pad_x)
                 trim_right = min(px1 - px0 - 1, nonzero_cols[-1] + pad_x)
-                bbox[0] = (px0 + trim_left)  / 4.0
-                bbox[2] = (px0 + trim_right) / 4.0
+                new_x0 = (px0 + trim_left)  / 4.0
+                new_x1 = (px0 + trim_right) / 4.0
+                
+                # 保護梁名 OCR 框：如果 trim 會切入框內，退到框邊緣
+                for tb in title_bboxes:
+                    t_cy = (tb["bottom_y"] - tb["h"] / 2) / 4.0  # 標題 Y 中心 (PDF pt)
+                    # 標題 Y 中心必須在 bbox 的 Y 範圍內才考慮保護
+                    if bbox[1] - 5 <= t_cy <= bbox[3] + 5:
+                        t_x0 = tb["ocr_x_left"]    # PDF pt
+                        t_x1 = tb["ocr_x_right"]   # PDF pt
+                        # 如果 trim 後的左邊界會切入標題框，退到標題左邊界
+                        if new_x0 > t_x0 and new_x0 < t_x1:
+                            new_x0 = max(bbox[0], t_x0 - pad_x / 4.0)
+                        # 如果 trim 後的右邊界會切入標題框，退到標題右邊界
+                        if new_x1 < t_x1 and new_x1 > t_x0:
+                            new_x1 = min(bbox[2], t_x1 + pad_x / 4.0)
+                
+                bbox[0] = new_x0
+                bbox[2] = new_x1
             
-            # Y 軸頂部 (用去標題 thresh)
+            # Y 軸頂部 (用去梁名 thresh，避免標題干擾結構邊緣)
             row_sums = roi.sum(axis=1)
             nonzero_rows = np.where(row_sums > 0)[0]
             if len(nonzero_rows) > 0:
@@ -699,7 +720,7 @@ class VectorExtractor:
         pw, ph = page.rect.width, page.rect.height
         self._content_trim_bboxes(results, thresh_no_titles, pw, ph,
                                   pad_x=60, pad_y=20, trim_bottom=False,
-                                  thresh_bottom=thresh)
+                                  thresh_bottom=thresh, title_bboxes=confirmed_titles_list)
         
         # === Phase 3.6.7: 第三輪 NMS (Post-Trim Dedup) ===
         # Content Trim 收緊邊界後，原本因雜訊向不同方向膨脹（一張左右、一張上下）
@@ -799,6 +820,50 @@ class VectorExtractor:
             if phase37_deleted > 0 or phase37_split > 0:
                 print(f"[Phase 3.7] Y軸自檢: 刪除 {phase37_deleted} 無標題塊, 垂直分割 {phase37_split} 多排塊")
             
+            # === Phase 3.7 Post-Split Empty Check ===
+            # 垂直分割在多排母塊的重疊邊界處可能產出無像素的窄條殘片，
+            # 用二值圖檢查每個子塊是否有結構像素，無像素的直接刪除。
+            import numpy as np
+            non_empty_parents = []
+            non_empty_logs = []
+            empty_count = 0
+            for i, bbox in enumerate(original_parents):
+                px0 = max(0, int(bbox[0] * 4))
+                py0 = max(0, int(bbox[1] * 4))
+                px1 = min(thresh_no_titles.shape[1], int(bbox[2] * 4))
+                py1 = min(thresh_no_titles.shape[0], int(bbox[3] * 4))
+                if px1 > px0 and py1 > py0:
+                    roi = thresh_no_titles[py0:py1, px0:px1]
+                    if np.any(roi):
+                        non_empty_parents.append(bbox)
+                        non_empty_logs.append(trimmed_parent_logs[i])
+                        continue
+                empty_count += 1
+            if empty_count > 0:
+                print(f"[Phase 3.7] 刪除 {empty_count} 個無像素空白殘片")
+                original_parents = non_empty_parents
+                trimmed_parent_logs = non_empty_logs
+
+            # --- DEBUG: 追蹤所有圖塊 ---
+            _trace_file = open('yolo_dataset/trace_direct.txt', 'w', encoding='utf-8')
+            def _trace_2fb45(stage, parents, logs):
+                for i, bb in enumerate(parents):
+                    if i < len(logs):
+                        titles = logs[i].get('titles',[])
+                        titles_text = ' | '.join(t.get('text','?') for t in titles)
+                    else:
+                        titles_text = '(no log)'
+                    _trace_file.write(f"[TRACE] {stage} [{i}]: y0={bb[1]:.2f} y1={bb[3]:.2f} x0={bb[0]:.2f} x1={bb[2]:.2f} T=[{titles_text}]\n")
+                _trace_file.flush()
+            _trace_2fb45('After Phase 3.7 split', original_parents, trimmed_parent_logs)
+            
+            # === Phase 3.7 Post-Split Content Trim ===
+            # 垂直分割後，每個子塊繼承了母塊的完整 X 寬度，
+            # 立即做一次 Content Trim 收緊 X 軸，避免不相干的配筋圖殘影佔據不屬於該排的寬度。
+            self._content_trim_bboxes(original_parents, thresh_no_titles, pw, ph,
+                                      pad_x=40, pad_y=10, trim_bottom=False,
+                                      title_bboxes=confirmed_titles_list)
+            _trace_2fb45('After Phase 3.7 Trim', original_parents, trimmed_parent_logs)
             
             # === Phase 3.7.1: 二次 X 軸投影斷裂分割 (Post-Y-Split X Projection) ===
             # Phase 3.7 垂直分割後，每個子塊繼承了母塊的完整 X 寬度，
@@ -830,6 +895,7 @@ class VectorExtractor:
                             sp_bbox[3] = title_bottom_max
                 
                 original_parents = split_parents
+                _trace_2fb45('After Phase 3.7.1 X-split', original_parents, trimmed_parent_logs)
                 trimmed_parent_logs = new_logs
             
             
@@ -999,8 +1065,23 @@ class VectorExtractor:
                         if g_idx < len(y_groups) - 1:
                             cut_pdf_y = pdf_lowest_bottom + 20 / 4.0
                             sub_bbox = [orig_x0, prev_pdf_y, orig_x1, sub_y1]
-                            final_parents.append(sub_bbox)
-                            final_logs.append({"idx": len(final_parents)-1, "titles": group})
+                            # 檢查是否和已有母塊 Y 範圍高度重疊 (防止產出重複殘片)
+                            sub_h = sub_y1 - prev_pdf_y
+                            is_dup = False
+                            for fp in final_parents:
+                                # X 範圍大致相同才比較
+                                if abs(fp[0] - orig_x0) < 30 and abs(fp[2] - orig_x1) < 30:
+                                    overlap_y0 = max(fp[1], prev_pdf_y)
+                                    overlap_y1 = min(fp[3], sub_y1)
+                                    if overlap_y1 > overlap_y0:
+                                        overlap_ratio = (overlap_y1 - overlap_y0) / (sub_h + 1e-6)
+                                        if overlap_ratio > 0.6:
+                                            is_dup = True
+                                            print(f"  [Phase 3.7.2] 跳過重複殘片 y=[{prev_pdf_y:.1f}, {sub_y1:.1f}]，已被 y=[{fp[1]:.1f}, {fp[3]:.1f}] 覆蓋 {overlap_ratio:.0%}")
+                                            break
+                            if not is_dup:
+                                final_parents.append(sub_bbox)
+                                final_logs.append({"idx": len(final_parents)-1, "titles": group})
                             prev_pdf_y = max(cut_pdf_y, sub_y1)
                         else:
                             sub_bbox = [orig_x0, prev_pdf_y, orig_x1, sub_y1]
@@ -1050,16 +1131,20 @@ class VectorExtractor:
             final_single_spans = list(original_parents)
             child_to_parent_map = {i: i for i in range(len(final_single_spans))}
             print(f"[Phase 3.8] 原有 {len(final_parents)} 母塊。已依指示關閉 X 軸斬波，共輸出 {len(final_single_spans)} 個單純受 Y 軸修整之母圖塊。")
-            results = final_single_spans            
+            results = final_single_spans
+            _trace_2fb45('Before Phase 3.8 Trim', results, trimmed_parent_logs)
             # === Pass 1 Content Trim (單跨級) ===
-            # 每個單跨各自依內容收緊，底部也 trim (Phase 3.7 已截斷過了)
+            # 每個單跨各自依內容收緊，底部也 trim
+            # 使用去梁名二值圖 (保留尺寸標註/配筋文字)，底部用含全文字版本
             self._content_trim_bboxes(results, thresh_no_titles, pw, ph,
                                       pad_x=40, pad_y=20, trim_bottom=True,
-                                      thresh_bottom=thresh)
+                                      thresh_bottom=thresh,
+                                      title_bboxes=confirmed_titles_list)
+            _trace_2fb45('After Phase 3.8 Trim', results, trimmed_parent_logs)
             
             # === Top Edge Recovery (向上恢復被切斷的線條) ===
-            # Content trim 可能把頂部切在結構線上，用去標題二值圖向上擴展
-            # 直到頂部整行全白（無墨水），確保不切斷配筋圖的線條
+            # Content trim 可能把頂部切在結構線上，用去梁名二值圖向上擴展
+            # (保留尺寸標註、配筋文字，只擦除梁名) 直到頂部整行全白，確保不切斷配筋圖的線條
             import numpy as np
             max_expand_px = 200  # 最多向上擴展 200 個 4x px (≈50pt)
             top_recovery_count = 0
@@ -1083,12 +1168,14 @@ class VectorExtractor:
                     bbox[1] = py0 / 4.0
                     top_recovery_count += 1
             
+            _trace_2fb45('After Top Edge Recovery', results, trimmed_parent_logs)
             if top_recovery_count > 0:
                 print(f"[Top Edge Recovery] 向上恢復 {top_recovery_count} 個圖塊的頂部邊界")
             
             # === Final Title Reassignment ===
             # 所有切割/合併/trim 都做完了，用最終 bbox 重新分配標題歸屬
             # 確保 idx 與 enumerate 同步，每個標題只歸屬於面積最小的包含母塊
+            # 注意: 忽略高度過小的殘片 (<50pt ≈ 12.5 PDF pt)，避免 Phase 3.7.2 邊界殘片搶走標題
             trimmed_parent_logs = []
             for idx, p_bbox in enumerate(results):
                 trimmed_parent_logs.append({"idx": idx, "titles": []})
@@ -1099,9 +1186,12 @@ class VectorExtractor:
                 best_idx = -1
                 best_area = float("inf")
                 for idx, p_bbox in enumerate(results):
+                    bbox_h = p_bbox[3] - p_bbox[1]
+                    if bbox_h < 50:  # 太薄的殘片不參與標題歸屬競爭
+                        continue
                     if (p_bbox[0] - 10 <= pdf_cx <= p_bbox[2] + 10 and
                         p_bbox[1] - 5  <= pdf_cy <= p_bbox[3] + 10):
-                        area = (p_bbox[2] - p_bbox[0]) * (p_bbox[3] - p_bbox[1])
+                        area = (p_bbox[2] - p_bbox[0]) * bbox_h
                         if area < best_area:
                             best_area = area
                             best_idx = idx
