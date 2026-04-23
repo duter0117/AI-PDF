@@ -1,0 +1,83 @@
+[Phase 3.4] X 軸投影斷裂分割: 將 25 個母塊拆分為 28 個
+載入 RapidOCR 引擎成功
+[Phase 3.5.5] 全域收集到 63 個標題候選: ['F18', '3F B4-5 (70x90)', '2F B4-2 (65x120)', '2F B4-3a', '3F B4-5（70x90)', '4-&5（E.F)', 'B10', '2F B4-2 （65x120）', '2F B4-3a（100x60)', '2FB4-3b （80x120）', '2F B4-4（100x60)', '2F B4-2 (65x120)', '2F B4-3a', '2F B4-5 (65x120)', '1MF B4-3a (100x60)', '1MF B4-4 (100x60)', '1MF B4-3a (100x60)', '1MF B4-4 (100x60)', '(E.F)', '2F B4-5 (65x120)', '5 (E.F)', 'R1F B3-2 (60x90)', '2F B4-5 (65x120)', 'R1F B3-2 (60x90)', 'R1F CB3-3 (70x90)', 'R1F CB3-4 (70x90)', 'R1F B3-5 (60x90)', 'R1F B3-2 (60x90)', 'R1F CB3-3 (70x90)', '18F B3-2 （60x90）', '18F CB3-3 （50x70）', 'R1F CB3-4 (70x90)', 'R1F B3-5 (60x90)', '18F CB3-4 （50x70）', '18F B3-5 （60x90)', '5 (E.F)', '18F B3-2 (60x90)', '5 (E.F)', '17F B3-2 (60x90)', '5 (E.F)', '18F B3-5 (60x90)', '5 (E.F)', '17F B3-5 (60x90)', '18F CB3-3 (50x70)', '17F CB3-3 (50x70)', '18F CB3-4 (50x70)', '17F CB3-4 (50x70)', '18F B3-2 (60x90)', '18F CB3-3 (50x70)', '17F B3-2 (60x90)', '17F CB3-3 (50x70)', '18F CB3-4 (50x70)', '18F B3-5 (60x90)', '17F CB3-4 (50x70)', '17F B3-5 (60x90)', '1.RC柱、梁因現場施工性须调整主筋排列位置時，整前後柱、梁主筋有效深度d值之變化量须小於3%。', 'hap', 'nap H.P. Chueh A', 'nao H.P. Chueh Architects & P', 'H.P. Chueh Architects & Planners', 'Architects & Planners', '&Planners', 'S4-32']
+[Phase 3.5.5] LLM 高效雜訊過濾完成: 保留 46 / 63 個標題
+[Phase 3.5.5] LLM 回傳採納之梁標題清單: ['3F B4-5 (70x90)', '2F B4-2 (65x120)', '2F B4-3a', '3F B4-5（70x90)', '2F B4-2 （65x120）', '2F B4-3a（100x60)', '2FB4-3b （80x120）', '2F B4-4（100x60)', '2F B4-2 (65x120)', '2F B4-3a', '2F B4-5 (65x120)', '1MF B4-3a (100x60)', '1MF B4-4 (100x60)', '1MF B4-3a (100x60)', '1MF B4-4 (100x60)', '2F B4-5 (65x120)', 'R1F B3-2 (60x90)', '2F B4-5 (65x120)', 'R1F B3-2 (60x90)', 'R1F CB3-3 (70x90)', 'R1F CB3-4 (70x90)', 'R1F B3-5 (60x90)', 'R1F B3-2 (60x90)', 'R1F CB3-3 (70x90)', '18F B3-2 （60x90）', '18F CB3-3 （50x70）', 'R1F CB3-4 (70x90)', 'R1F B3-5 (60x90)', '18F CB3-4 （50x70）', '18F B3-5 （60x90)', '18F B3-2 (60x90)', '17F B3-2 (60x90)', '18F B3-5 (60x90)', '17F B3-5 (60x90)', '18F CB3-3 (50x70)', '17F CB3-3 (50x70)', '18F CB3-4 (50x70)', '17F CB3-4 (50x70)', '18F B3-2 (60x90)', '18F CB3-3 (50x70)', '17F B3-2 (60x90)', '17F CB3-3 (50x70)', '18F CB3-4 (50x70)', '18F B3-5 (60x90)', '17F CB3-4 (50x70)', '17F B3-5 (60x90)']
+[Phase 3.6] 標題歸屬回收: 延伸 6 個 bbox。
+[Phase 3.6.5] 二次貪婪融合: 因標題向下擴張產生重疊，將 28 個母塊合體為 16 個
+[Phase 3.6.7] Post-Trim NMS: 收緊後偵測到重疊，16 → 15 個母塊
+[Phase 3.7] 母塊 0 垂直分割: 2 排, 標題: ['3F B4-5', '2F B4-2', '2F B4-3a', '3F B4-5', '2F B4-2', '2F B4-3a', '2F B4-3b', '2F B4-4', '2F B4-2', '2F B4-3a']
+[Phase 3.7] 母塊 1 垂直分割: 4 排, 標題: ['2F B4-2', '2F B4-3a', '2F B4-2', '2F B4-3a', '2F B4-3b', '2F B4-2', '2F B4-3a', '2F B4-5', '1MF B4-3a', '1MF B4-4', '1MF B4-3a', '1MF B4-4', '2F B4-5', 'R1F B3-2', '2F B4-5', 'R1F B3-2', 'R1F CB3-3', 'R1F CB3-4', 'R1F B3-2', 'R1F CB3-3', 'R1F CB3-4']
+[Phase 3.7] 母塊 2 垂直分割: 3 排, 標題: ['R1F B3-2', 'R1F B3-2', 'R1F CB3-3', 'R1F B3-2', 'R1F CB3-3', '18F B3-2', '18F CB3-3', '18F B3-2', '17F B3-2', '18F CB3-3', '17F CB3-3', '18F B3-2', '18F CB3-3', '17F B3-2', '17F CB3-3']
+[Phase 3.7] 母塊 3 垂直分割: 3 排, 標題: ['R1F CB3-4', 'R1F B3-5', 'R1F CB3-4', 'R1F B3-5', '18F CB3-4', '18F B3-5', '18F B3-5', '17F B3-5', '18F CB3-4', '17F CB3-4', '18F CB3-4', '18F B3-5', '17F CB3-4', '17F B3-5']
+[Phase 3.7] 母塊 4 垂直分割: 2 排, 標題: ['1MF B4-4', '1MF B4-4', 'R1F CB3-4', 'R1F B3-5', 'R1F CB3-4', 'R1F B3-5']
+[Phase 3.7] 刪除無標題母塊 5 (y0=724.0)
+[Phase 3.7] 刪除無標題母塊 6 (y0=766.5)
+[Phase 3.7] 刪除無標題母塊 7 (y0=766.5)
+[Phase 3.7] 刪除無標題母塊 8 (y0=768.5)
+[Phase 3.7] 刪除無標題母塊 9 (y0=766.5)
+[Phase 3.7] 刪除無標題母塊 10 (y0=774.0)
+[Phase 3.7] 刪除無標題母塊 11 (y0=773.8)
+[Phase 3.7] 刪除無標題母塊 12 (y0=769.0)
+[Phase 3.7] 刪除無標題母塊 13 (y0=774.0)
+[Phase 3.7] 刪除無標題母塊 14 (y0=766.5)
+[Phase 3.7] Y軸自檢: 刪除 10 無標題塊, 垂直分割 5 多排塊
+[Phase 3.7] 刪除 1 個無像素空白殘片
+[Phase 3.7.1] 二次 X 軸分割: 將 13 個子塊拆分為 17 個
+[Phase 3.7.1b] 二次 Title Reclaim: 為 1 個無標題子塊找回梁名
+[Phase 3.7.1c] Post-Reclaim NMS: 17 → 10 個子塊
+[Phase 3.7.2] 融合後二次水平斬波: 將融合大塊切成 2 排
+[Phase 3.7.2] 成功對 1 個剛剛融合完成的跨排母塊執行二次水平斬波。
+[Phase 3.8] 原有 11 母塊。已依指示關閉 X 軸斬波，共輸出 11 個單純受 Y 軸修整之母圖塊。
+[Top Edge Recovery] 向上恢復 1 個圖塊的頂部邊界
+
+================================================================================
+=== FINAL RESULTS FOR R1F BLOCKS ===
+Parent 2: bbox=[422.0, 347.8, 849.5, 443.2]
+  titles = ['R1F CB3-3', 'R1F CB3-4', 'R1F CB3-3', 'R1F CB3-4']
+Parent 7: bbox=[54.8, 352.5, 556.5, 443.2]
+  titles = ['R1F B3-2', 'R1F B3-2', 'R1F B3-2']
+Parent 8: bbox=[594.0, 352.5, 1095.2, 443.0]
+  titles = ['R1F B3-5', 'R1F B3-5']
+
+=== trace_direct.txt (R1F Y range) ===
+[TRACE] After Phase 3.7 split [0]: y0=36.00 y1=129.06 x0=37.00 x1=1041.25 T=[3F B4-5 | 3F B4-5]
+[TRACE] After Phase 3.7 split [4]: y0=325.50 y1=342.50 x0=33.50 x1=733.12 T=[2F B4-5 | 2F B4-5 | 2F B4-5]
+[TRACE] After Phase 3.7 split [5]: y0=346.50 y1=443.75 x0=33.50 x1=733.12 T=[R1F CB3-3 | R1F CB3-4 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2 | R1F CB3-4]
+[TRACE] After Phase 3.7 split [6]: y0=440.00 y1=443.75 x0=54.75 x1=561.00 T=[R1F CB3-3 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2]
+[TRACE] After Phase 3.7 split [7]: y0=447.75 y1=544.82 x0=54.75 x1=561.00 T=[18F B3-2 | 18F CB3-3 | 18F CB3-3 | 18F B3-2 | 18F CB3-3 | 18F B3-2]
+[TRACE] After Phase 3.7 split [9]: y0=449.50 y1=544.75 x0=590.00 x1=1096.00 T=[18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5]
+[TRACE] After Phase 3.7 split [12]: y0=325.50 y1=443.62 x0=594.00 x1=1096.00 T=[R1F CB3-4 | R1F B3-5 | R1F CB3-4 | R1F B3-5]
+[TRACE] After Phase 3.7 Trim [0]: y0=38.25 y1=129.06 x0=37.00 x1=427.50 T=[3F B4-5 | 3F B4-5]
+[TRACE] After Phase 3.7 Trim [4]: y0=325.50 y1=342.50 x0=46.25 x1=426.00 T=[2F B4-5 | 2F B4-5 | 2F B4-5]
+[TRACE] After Phase 3.7 Trim [5]: y0=352.50 y1=443.75 x0=44.75 x1=732.75 T=[R1F CB3-3 | R1F CB3-4 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2 | R1F CB3-4]
+[TRACE] After Phase 3.7 Trim [6]: y0=440.00 y1=443.75 x0=413.60 x1=527.50 T=[R1F CB3-3 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2]
+[TRACE] After Phase 3.7 Trim [7]: y0=453.25 y1=544.82 x0=54.75 x1=560.75 T=[18F B3-2 | 18F CB3-3 | 18F CB3-3 | 18F B3-2 | 18F CB3-3 | 18F B3-2]
+[TRACE] After Phase 3.7 Trim [9]: y0=453.25 y1=544.75 x0=590.00 x1=1095.75 T=[18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5]
+[TRACE] After Phase 3.7 Trim [12]: y0=352.50 y1=443.62 x0=594.00 x1=1095.75 T=[R1F CB3-4 | R1F B3-5 | R1F CB3-4 | R1F B3-5]
+[TRACE] After Phase 3.7.1 X-split [0]: y0=38.25 y1=129.06 x0=37.00 x1=417.75 T=[3F B4-5 | 3F B4-5]
+[TRACE] After Phase 3.7.1 X-split [6]: y0=325.50 y1=342.50 x0=193.75 x1=279.00 T=[R1F CB3-3 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2]
+[TRACE] After Phase 3.7.1 X-split [7]: y0=352.50 y1=443.75 x0=54.75 x1=557.00 T=[18F B3-2 | 18F CB3-3 | 18F CB3-3 | 18F B3-2 | 18F CB3-3 | 18F B3-2]
+[TRACE] After Phase 3.7.1 X-split [8]: y0=352.50 y1=443.75 x0=594.00 x1=732.75 T=[17F CB3-3 | 17F B3-2 | 17F B3-2 | 17F CB3-3]
+[TRACE] After Phase 3.7.1 X-split [9]: y0=440.00 y1=443.75 x0=413.60 x1=527.50 T=[18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5]
+[TRACE] After Phase 3.7.1 X-split [10]: y0=453.25 y1=544.82 x0=54.75 x1=560.75 T=[17F B3-5 | 17F CB3-4 | 17F B3-5 | 17F CB3-4]
+[TRACE] After Phase 3.7.1 X-split [12]: y0=453.25 y1=544.75 x0=590.00 x1=1095.75 T=[R1F CB3-4 | R1F B3-5 | R1F CB3-4 | R1F B3-5]
+[TRACE] After Phase 3.7.1 X-split [16]: y0=352.50 y1=443.62 x0=594.00 x1=1095.75 T=[(no log)]
+[TRACE] Before Phase 3.8 Trim [2]: y0=325.50 y1=443.50 x0=422.00 x1=849.75 T=[R1F CB3-3 | R1F CB3-4 | R1F CB3-3 | R1F CB3-4]
+[TRACE] Before Phase 3.8 Trim [3]: y0=453.25 y1=544.50 x0=54.75 x1=560.50 T=[18F B3-2 | 18F CB3-3 | 18F CB3-3 | 18F B3-2 | 18F CB3-3 | 18F B3-2]
+[TRACE] Before Phase 3.8 Trim [4]: y0=453.25 y1=544.50 x0=590.00 x1=1095.50 T=[18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5]
+[TRACE] Before Phase 3.8 Trim [7]: y0=352.50 y1=443.50 x0=54.75 x1=556.75 T=[R1F CB3-3 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2]
+[TRACE] Before Phase 3.8 Trim [8]: y0=352.50 y1=443.25 x0=594.00 x1=1095.50 T=[R1F CB3-4 | R1F CB3-4 | R1F B3-5 | R1F B3-5]
+[TRACE] Before Phase 3.8 Trim [10]: y0=38.25 y1=128.75 x0=37.00 x1=417.50 T=[3F B4-5 | 3F B4-5]
+[TRACE] After Phase 3.8 Trim [2]: y0=347.75 y1=443.25 x0=422.00 x1=849.50 T=[R1F CB3-3 | R1F CB3-4 | R1F CB3-3 | R1F CB3-4]
+[TRACE] After Phase 3.8 Trim [3]: y0=453.25 y1=544.25 x0=54.75 x1=560.25 T=[18F B3-2 | 18F CB3-3 | 18F CB3-3 | 18F B3-2 | 18F CB3-3 | 18F B3-2]
+[TRACE] After Phase 3.8 Trim [4]: y0=453.25 y1=544.25 x0=590.00 x1=1095.25 T=[18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5]
+[TRACE] After Phase 3.8 Trim [7]: y0=352.50 y1=443.25 x0=54.75 x1=556.50 T=[R1F CB3-3 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2]
+[TRACE] After Phase 3.8 Trim [8]: y0=352.50 y1=443.00 x0=594.00 x1=1095.25 T=[R1F CB3-4 | R1F CB3-4 | R1F B3-5 | R1F B3-5]
+[TRACE] After Phase 3.8 Trim [10]: y0=38.25 y1=128.50 x0=37.00 x1=417.25 T=[3F B4-5 | 3F B4-5]
+[TRACE] After Top Edge Recovery [2]: y0=347.75 y1=443.25 x0=422.00 x1=849.50 T=[R1F CB3-3 | R1F CB3-4 | R1F CB3-3 | R1F CB3-4]
+[TRACE] After Top Edge Recovery [3]: y0=453.25 y1=544.25 x0=54.75 x1=560.25 T=[18F B3-2 | 18F CB3-3 | 18F CB3-3 | 18F B3-2 | 18F CB3-3 | 18F B3-2]
+[TRACE] After Top Edge Recovery [4]: y0=453.25 y1=544.25 x0=590.00 x1=1095.25 T=[18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5 | 18F CB3-4 | 18F B3-5]
+[TRACE] After Top Edge Recovery [7]: y0=352.50 y1=443.25 x0=54.75 x1=556.50 T=[R1F CB3-3 | R1F B3-2 | R1F B3-2 | R1F CB3-3 | R1F B3-2]
+[TRACE] After Top Edge Recovery [8]: y0=352.50 y1=443.00 x0=594.00 x1=1095.25 T=[R1F CB3-4 | R1F CB3-4 | R1F B3-5 | R1F B3-5]
+[TRACE] After Top Edge Recovery [10]: y0=38.25 y1=128.50 x0=37.00 x1=417.25 T=[3F B4-5 | 3F B4-5]

@@ -1218,6 +1218,75 @@ class VectorExtractor:
                 if best_idx >= 0:
                     trimmed_parent_logs[best_idx]["titles"].append(ct)
             
+            # === Parasitic Block Elimination ===
+            # 如果兩個 parent 的 Y 範圍高度重疊 (>70%) 且 X 範圍也有高度重疊 (>50%)，
+            # 表示小的那個是寄生塊 (通常是 NMS 沒合併乾淨的殘片)。
+            # 步驟 1: 找出所有寄生塊 (面積較小且與另一塊高度重疊者)
+            parasitic_indices = set()
+            for i in range(len(results)):
+                if not trimmed_parent_logs[i]["titles"]:
+                    continue
+                a = results[i]
+                area_i = (a[2] - a[0]) * (a[3] - a[1])
+                for j in range(len(results)):
+                    if j == i or not trimmed_parent_logs[j]["titles"]:
+                        continue
+                    b = results[j]
+                    y_overlap = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+                    y_min_h = min(a[3] - a[1], b[3] - b[1])
+                    if y_min_h < 1:
+                        continue
+                    y_ratio = y_overlap / y_min_h
+                    x_overlap = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+                    x_min_w = min(a[2] - a[0], b[2] - b[0])
+                    if x_min_w < 1:
+                        continue
+                    x_ratio = x_overlap / x_min_w
+                    
+                    if y_ratio > 0.7 and x_ratio > 0.5:
+                        area_j = (b[2] - b[0]) * (b[3] - b[1])
+                        if area_i < area_j:
+                            parasitic_indices.add(i)
+                            break  # i 已確認為寄生塊
+            
+            # 步驟 2: 將寄生塊的每個標題按 X 座標分配給最近的非寄生宿主
+            if parasitic_indices:
+                for pi in parasitic_indices:
+                    p_bbox = results[pi]
+                    p_h = p_bbox[3] - p_bbox[1]
+                    for t in trimmed_parent_logs[pi]["titles"]:
+                        pdf_cx = t["cx"] / 4.0
+                        best_host = -1
+                        best_dist = float("inf")
+                        for hi in range(len(results)):
+                            if hi in parasitic_indices:
+                                continue
+                            if not trimmed_parent_logs[hi]["titles"]:
+                                continue
+                            h_bbox = results[hi]
+                            # Y 重疊率必須 > 50% (防止跳到相鄰排)
+                            y_overlap = max(0.0, min(h_bbox[3], p_bbox[3]) - max(h_bbox[1], p_bbox[1]))
+                            if p_h > 0 and y_overlap / p_h < 0.5:
+                                continue
+                            # 計算標題 X 中心到宿主 X 中心的距離
+                            h_cx = (h_bbox[0] + h_bbox[2]) / 2.0
+                            dist = abs(pdf_cx - h_cx)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_host = hi
+                        
+                        if best_host >= 0:
+                            existing_ids = {tt["id"] for tt in trimmed_parent_logs[best_host]["titles"]}
+                            if t["id"] not in existing_ids:
+                                trimmed_parent_logs[best_host]["titles"].append(t)
+                    
+                    p_titles = [t["text"] for t in trimmed_parent_logs[pi]["titles"]]
+                    print(f"[Parasitic Block] 消除寄生塊 [{pi}] x=[{p_bbox[0]:.0f}~{p_bbox[2]:.0f}], "
+                          f"標題 {p_titles} 已按 X 座標分散給最近宿主")
+                    trimmed_parent_logs[pi]["titles"] = []
+                
+                print(f"[Parasitic Block Elimination] 消除 {len(parasitic_indices)} 個寄生殘片")
+            
             # 刪除無標題的母塊
             final_results = []
             final_logs = []
